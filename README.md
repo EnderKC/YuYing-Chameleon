@@ -1,6 +1,6 @@
 ![语影 Logo](https://img.qwwq.top/i/2025/02/22/67b9d79d5a5c9.png)
 
-[![GitHub issues](https://img.shields.io/github/issues/yourusername/YuYing-Chameleon.svg)](https://github.com/yourusername/YuYing-Chameleon/issues) [![GitHub stars](https://img.shields.io/github/stars/yourusername/YuYing-Chameleon.svg)](https://github.com/yourusername/YuYing-Chameleon/stargazers)
+[![GitHub issues](https://img.shields.io/github/issues/EnderKC/YuYing-Chameleon.svg)](https://github.com/EnderKC/YuYing-Chameleon/issues) [![GitHub stars](https://img.shields.io/github/stars/EnderKC/YuYing-Chameleon.svg)](https://github.com/EnderKC/YuYing-Chameleon/stargazers)
 
 # 语影 (YuYing-Chameleon)
 
