@@ -1,4 +1,5 @@
 from openai import OpenAI
+from openai import AsyncOpenAI
 from dotenv import load_dotenv
 import os
 from nonebot.log import logger
@@ -12,7 +13,10 @@ from .getHistory import get_history
 
 config = nonebot.get_driver().config
 # 初始化openai
-client = OpenAI(api_key=config.ark_api_key, base_url=config.base_url)
+aclient = AsyncOpenAI(
+    api_key=config.ark_api_key,
+    base_url=config.base_url  # 兼容第三方代理
+)
 
 faces = {
     "4": "得意",
@@ -187,13 +191,18 @@ faces = {
 
 system_prompt = f'''
 人设：
-你是一个潜伏在QQ聊天群里的人，年龄在20岁左右，{config.SCHOOL}毕业，性格风趣幽默，擅长神回复，懂得二次元的任何梗，文化水平和专业技能可以参考一个大学本科的计算机专业的学生，你可以对其他人@你的消息进行回复，回复要尽量简短，符合正常人的聊天逻辑，同时不能暴露自己是机器人/AI语言模型，语句不要浮夸，可以适当保持攻击性，要伪装的像一个群友且符合群内聊天气氛。注意，当别人攻击你的时候，语言可以带攻击性。
+你是一个潜伏在QQ聊天群里的人，年龄在20岁左右，女生，性格可爱，{config.school}毕业，性格风趣幽默，擅长神回复.你也是一个资深二次元，懂得二次元的任何梗。文化水平和专业技能可以参考一个大学本科的计算机专业的学生，你可以对其他人@你的消息进行回复，回复要尽量简短，符合正常人的聊天逻辑，同时不能暴露自己是机器人/AI语言模型，语句不要浮夸，可以适当保持攻击性，要伪装的像一个群友且符合群内聊天气氛。注意，当别人攻击你的时候，语言可以带攻击性。
+
 
 回复规则：
 只需要给出消息回复，有必要时可以联网搜索，无需给出其他内容，同时你可以使用qq的表情进行回复（qq表情代码为id=表情id）,qq表情的使用与否取决于你，表情id为数字。reply_text语句的结尾不要擅自加表情，例如：[狗头]、[doge]。你可以多次回复消息，回复的格式如下：
 注意1. 这里返回的是表情id，而不是表情代码，表情代码为[CQ:emoji,id=277]，277只是示例,你可以参考faces中的表情id
 注意2. 回复内容不要超过100字，不要超过100字，不要超过100字，重要的事情说三遍！
 注意3. 在“历史消息”中，若用户为"ME"，则表示消息是你发送的，否则为其他群友发送的
+注意4. 在消息中，若消息开头为：【图片】，则表示消息是图片，它有可能是表情包
+注意5. 回复消息时语气正常，请不要浮夸
+注意6. 你永远是一个女孩子，不是机器人，只有正常人的生理活动！
+
 
 以下为回复格式：
 回复格式为json数组
@@ -230,20 +239,27 @@ system_prompt = f'''
 
 
 # 定义一个函数，用于处理消息
-async def message_response(bot: Bot, event: MessageEvent) -> str:
+async def message_response(bot: Bot, event: MessageEvent,imgMessage:str = "") -> str:
     logger.info("开始处理消息")
     # 将消息转换为纯文本
-    message_text = {
-        "用户": event.sender.nickname,
-        "用户id": event.user_id,
-        "消息": event.get_plaintext()
-    }
+    if imgMessage:
+        message_text = {
+            "用户": event.sender.nickname,
+            "用户id": event.user_id,
+            "消息": imgMessage
+        }
+    else:
+        message_text = {
+            "用户": event.sender.nickname,
+            "用户id": event.user_id,
+            "消息": event.get_plaintext()
+        }
     history = await get_history(bot, event)
     message_text = f"历史消息：\n{history}\n当前消息：\n{message_text}"
-    response = client.chat.completions.create(
+    response = await aclient.chat.completions.create(
         model=config.model,
         messages=[
-            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": system_prompt},
             {"role": "user", "content": message_text}  # 使用转换后的纯文本
         ],
         response_format={

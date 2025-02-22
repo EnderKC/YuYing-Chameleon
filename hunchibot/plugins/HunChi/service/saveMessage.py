@@ -6,13 +6,13 @@ from nonebot.log import logger
 # @Description: 保存消息
 # @Param: message: Message
 # @Return: None
-async def save_message(bot: Bot,event: MessageEvent) -> None:
+async def save_message(bot: Bot,event: MessageEvent,imgMessage:str = "") -> None:
     logger.info(event.message_type)
     if event.message_type == "group":
         await check_group_exist(bot,event)
-        await save_message_to_db(event,group_id= event.group_id)
+        await save_message_to_db(event,group_id= event.group_id,imgMessage=imgMessage)
     elif event.message_type == "private":
-        await save_message_to_db(event,friend_id=event.user_id)
+        await save_message_to_db(event,friend_id=event.user_id,imgMessage=imgMessage)
 
 # @Description: 检查群组是否存在，若不存在创建
 # @Param: event: MessageEvent
@@ -33,9 +33,12 @@ async def check_group_exist(bot: Bot,event: MessageEvent) -> bool:
 # @Description: 保存消息到数据库
 # @Param: message: Message
 # @Return: None
-async def save_message_to_db(event: MessageEvent,group_id: int = 0,friend_id: int = 0) -> None:
+async def save_message_to_db(event: MessageEvent,group_id: int = 0,friend_id: int = 0,imgMessage:str = "") -> None:
     message_id = event.message_id
-    message = event.message
+    if imgMessage:
+        message = '【图片】:' + imgMessage
+    else:
+        message = event.message
     message_type = event.message_type
     message_sender_id = event.user_id
     message_sender_name = event.sender.nickname
