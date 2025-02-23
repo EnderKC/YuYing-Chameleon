@@ -29,6 +29,6 @@ async def handle_message(bot: Bot, event: MessageEvent):
         await save_message(bot, event)
 
     # 随机决定是否响应
-    if random.random() < 1:
+    if random.random() < 0.2:
         await message_response(bot, event, img_message if images else None)
     
