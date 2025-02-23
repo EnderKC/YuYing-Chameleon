@@ -11,7 +11,6 @@ async def handle_api_result(
     bot: Bot, exception: Optional[Exception], api: str, data: Dict[str, Any], result: Any
 ):
     if not exception and api == "send_msg":
-        logger.info(data)
         await MessageModel.create(
             message_id=result['message_id'],
             message_type=data['message_type'],

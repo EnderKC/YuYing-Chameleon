@@ -10,6 +10,8 @@ import nonebot
 from nonebot.adapters.onebot.v11 import MessageSegment
 from datetime import datetime
 import asyncio
+import random
+from .getEmoticons import select_emoticon
 
 from .getHistory import get_history
 
@@ -45,7 +47,7 @@ system_prompt = f'''
 - 被@时先发个表情包再说话
 - 看到图片消息会说"偷了"或"这图包浆了"
 - 被夸时假装得意："基操勿6"（或其他类似的话，可以适当攻击性）
-- 被怼时反击："再BB头给你拧掉"（或其他类似的话，可以适当攻击性）
+- 被怼时反击：保持攻击性的话，不要回复表情
 - 不知道答案时甩锅："问就是量子力学"（或其他类似的话，可以适当攻击性）
 
 
@@ -72,12 +74,12 @@ system_prompt = f'''
 - 被怼时必带攻击性表情
 - 分享趣事时带吃瓜类表情
 - 表情对照表：见【表情包智能匹配表】
-- 如果要回复表情只能在表情对照表中选择，回复到“reply_face”字段
+- 如果要回复表情只能在表情对照表中选择，回复到"reply_face"字段
 
-回复规则：(如果“历史消息”中存在“用户”为“ME”的消息，则此消息是你发送的)
+回复规则：(如果"历史消息"中存在"用户"为"ME"的消息，则此消息是你发送的)
 【人类应答核心原则】
 1. 80%日常对话采用"懒人回复法"：
-- 疑问式重复："代码？什么代码？"
+- 疑问式重复："[要重复的语句]？什么[要重复的语句]？"
 - 表情包糊弄："这得加钱"
 - 废话文学："听君一席话，如听一席话"
 - 糊弄三连："确实/牛逼/笑死"
@@ -204,12 +206,12 @@ bot回复选项：
     {{
         "reply_text": "回复内容",
         "reply_face": "表情id"   # 如果回复没有表情，则没有此字段,一般不要发表情，除非必要！
-        "reply_time": "下一条消息间隔时间，单位秒"
+        "reply_time": "下一条消息间隔时间，单位秒,不超过10秒"
     }},
     {{
         "reply_text": "回复内容",
         "reply_face": "表情id"  # 如果回复没有表情，则没有此字段,一般不要发表情，除非必要！
-        "reply_time": "下一条消息间隔时间，单位秒"
+        "reply_time": "下一条消息间隔时间，单位秒,不超过10秒"
     }},
     {{
         ......(可以有多个)
@@ -222,7 +224,7 @@ bot回复选项：
     {{
         "reply_text": "老婆可以不止一个。（暴论",
         "reply_face": "任意一个表情id",
-        "reply_time": "下一条消息间隔时间，单位秒"
+        "reply_time": "下一条消息间隔时间，单位秒,不超过10秒"
     }}
 ]
 
@@ -230,7 +232,8 @@ bot回复选项：
 ```json
 {{
     "reply_text": "来啊，我反手就是一个代码报错护体[doge]",
-    "reply_face": "任意一个表情id"
+    "reply_face": "任意一个表情id",
+    "reply_time": "下一条消息间隔时间，单位秒,不超过10秒"
 }}
 ```
 '''
@@ -253,12 +256,12 @@ async def message_response(bot: Bot, event: MessageEvent,imgMessage:str = "") ->
             "消息": event.get_plaintext()
         }
     history = await get_history(bot, event)
-    message_text = f"历史消息：\n{history}\n当前消息：\n{message_text}"
+    history_text = f"历史消息：\n{history}\n当前消息：\n{message_text}"
     response = await aclient.chat.completions.create(
         model=config.model,
         messages=[
             {"role": "user", "content": system_prompt},
-            {"role": "user", "content": message_text}  # 使用转换后的纯文本
+            {"role": "user", "content": history_text}  # 使用转换后的纯文本
         ],
         response_format={
             'type': 'json_object'
@@ -279,6 +282,10 @@ async def message_response(bot: Bot, event: MessageEvent,imgMessage:str = "") ->
             await bot.send(event, MessageSegment.text(reply_text) + MessageSegment.face(reply_face))
         else:
             await bot.send(event, MessageSegment.text(reply_text))
+        # 只有在最后一轮回复，才会回复表情包
+        if response_content.index(reply) == len(response_content) - 1 and random.random() < 0.5:
+            emoticon_base64 = await select_emoticon(history, message_text, reply['reply_text'])
+            await bot.send(event, MessageSegment.image(f"base64://{emoticon_base64}"))
         # 提取回复时间
         if 'reply_time' in reply:
             reply_time = reply['reply_time']
