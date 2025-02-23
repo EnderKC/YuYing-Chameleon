@@ -257,14 +257,14 @@ async def message_response(bot: Bot, event: MessageEvent,imgMessage:str = "") ->
     response = await aclient.chat.completions.create(
         model=config.model,
         messages=[
-            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": system_prompt},
             {"role": "user", "content": message_text}  # 使用转换后的纯文本
         ],
         response_format={
             'type': 'json_object'
         },
         max_tokens=1024,
-        temperature=0.7,
+        temperature=0.6,
         stream=False
     )
     logger.info(response.choices[0].message.content)
