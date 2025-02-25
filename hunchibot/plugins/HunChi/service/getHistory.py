@@ -19,7 +19,7 @@ async def get_group_history(bot: Bot, event: MessageEvent) -> list:
             "用户": message.message_sender_name,
             "消息": message.message
         }
-        for message in messages
+        for message in reversed(messages)
     ]
     
     return formatted_messages

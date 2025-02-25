@@ -7,12 +7,13 @@ from nonebot.log import logger
 # @Param: message: Message
 # @Return: None
 async def save_message(bot: Bot,event: MessageEvent,imgMessage:str = "") -> None:
-    logger.info(event.message_type)
+    logger.info("保存消息中...")
     if event.message_type == "group":
         await check_group_exist(bot,event)
         await save_message_to_db(event,group_id= event.group_id,imgMessage=imgMessage)
     elif event.message_type == "private":
         await save_message_to_db(event,friend_id=event.user_id,imgMessage=imgMessage)
+    logger.info("消息保存完成")
 
 # @Description: 检查群组是否存在，若不存在创建
 # @Param: event: MessageEvent
