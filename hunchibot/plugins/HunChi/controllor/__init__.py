@@ -5,9 +5,9 @@ from nonebot.rule import Rule,to_me
 from hunchibot.plugins.HunChi.service import save_message,message_response,get_history,analyze_img
 import random
 
-message = on_message(priority=10)
+message = on_message(priority=9,block=True)
 
-msg_handler = on_message(rule=to_me(), priority=9,block=True)
+msg_handler = on_message(rule=to_me(), priority=10,block=True)
 
 @msg_handler.handle()
 async def handle_at(bot: Bot, event: GroupMessageEvent):
@@ -36,7 +36,11 @@ async def handle_message(bot: Bot, event: MessageEvent):
     else:
         await save_message(bot, event)
 
-    # 随机决定是否响应
-    if random.random() < 0.2:
-        await message_response(bot, event, img_message if images else None)
+    # 私人消息直接响应
+    if event.message_type == "private":
+        await message_response(bot, event, img_message if images else None,toMe=True)
+    else:
+        # 群消息随机决定是否响应
+        if random.random() < 0.2:
+            await message_response(bot, event, img_message if images else None)
     
