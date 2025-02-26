@@ -21,6 +21,13 @@
 - **保存消息**: 保存消息到数据库，方便后续分析和使用。
 - **表情包**: 根据消息内容，自动匹配表情包。
 
+## 展示
+<div style="text-align: center;">
+    <img src="https://img.qwwq.top/i/2025/02/26/67bef8f55a62c.jpg" alt="语影 1" width="500"/>
+    <img src="https://img.qwwq.top/i/2025/02/26/67bef8fa17300.jpg" alt="语影 2" width="500"/>
+    <img src="https://img.qwwq.top/i/2025/02/26/67bef8fc5992d.jpg" alt="语影 3" width="500"/>
+    <img src="https://img.qwwq.top/i/2025/02/26/67bef8ffb12d9.jpg" alt="语影 4" width="500"/>
+</div>
 
 ## 使用说明
 1. **安装依赖**: 确保你已经安装了所需的依赖。
