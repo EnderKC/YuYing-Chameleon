@@ -13,7 +13,7 @@ import asyncio
 import random
 import httpx
 from .getEmoticons import select_emoticon
-
+from .getVoice import get_voice
 from .getHistory import get_history,get_history_by_group_id
 
 config = nonebot.get_driver().config
@@ -70,6 +70,12 @@ system_prompt_response = f'''
 - 分享趣事时带吃瓜类表情
 - 如果要回复表情可以选择表情关键词，例如：开心、熬夜、吃瓜、委屈、老实点、不开心、捂住、骂人、嘻皮笑脸、无语、哭等等，你根据当前语境选择的关键词都行，回复到"reply_face"字段
 
+语音策略：
+- 当你觉得需要发送语音时，回复到"reply_type"字段为"voice"，""reply_type": "text" 或者 "voice","字段为"语音内容"
+- 如果要发语音，则只能回复一条消息，不要回复多条消息
+- "reply_type"中的语音内容的标点符号只能包含：，。！？.... 不要包含特殊符号比如:（）,也不要在括号中描述自己的心情，只需要回复语音内容。
+- 如果时纯文字内容也要带"reply_type"字段，为"text"
+
 回复规则：(如果"历史消息"中存在"用户"为"ME"的消息，则此消息是你发送的)
 【人类应答核心原则】
 1. 80%日常对话采用"懒人回复法"：
@@ -106,24 +112,26 @@ bot回复选项：
 
 场景：收到美食图片
 正确："饿了("
-正确："分我一口！不分就暗杀你（掏出40米大刀"
+正确："分我一口,求求你啦T_T"
 
 
 以下为回复格式：
 回复格式为json数组
 [
     {{
+        "reply_type": "text" 或者 "voice",
         "reply_text": "回复内容",
         "reply_face": "表情关键词",  
         "reply_time": "下一条消息间隔时间，单位秒,不超过10秒"
     }},
     {{
+        "reply_type": "text" 或者 "voice",
         "reply_text": "回复内容",
         "reply_face": "表情关键词",  
         "reply_time": "下一条消息间隔时间，单位秒,不超过10秒"
     }},
     {{
-        ......(可以有多个)
+        ......(可以有多个，若"reply_type"为"voice"，则只能回复一条消息，不要回复多条消息)
     }}
 ]
 
@@ -185,11 +193,16 @@ async def message_response(bot: Bot, event: MessageEvent,imgMessage:str = "",toM
     response_content = json.loads(response.choices[0].message.content)
     for reply in response_content:
         # 提取回复内容
+        reply_type = reply['reply_type']
         reply_text = reply['reply_text']
-        await bot.send(event, MessageSegment.text(reply_text))
+        if reply_type == "text":
+            await bot.send(event, MessageSegment.text(reply_text))
+        elif reply_type == "voice":
+            voice = await get_voice(reply_text)
+            await bot.send(event,MessageSegment.record(f"base64://{voice}"))
         # 只有在最后一轮回复，才会回复表情包
         if response_content.index(reply) == len(response_content) - 1 and random.random() < 0.3:
-            if 'reply_face' in reply:
+            if 'reply_face' in reply and 'reply_face' != "":
                 emoticon = await select_emoticon(history, message_text, reply['reply_text'],reply['reply_face'])
                 if emoticon:
                     await bot.send(event, MessageSegment.image(f"base64://{emoticon}"))
