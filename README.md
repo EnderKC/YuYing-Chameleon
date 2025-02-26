@@ -50,5 +50,6 @@
    ```
 
 ## 感谢
+- [1254qwer](https://github.com/1254qwer) 为本项目提供丰富的表情包支持
 - [nonebot](https://github.com/nonebot/nonebot) 为本项目提供丰富的bot框架支持
 - [EmojiPackage](https://github.com/getActivity/EmojiPackage) 为本项目提供表情包支持
