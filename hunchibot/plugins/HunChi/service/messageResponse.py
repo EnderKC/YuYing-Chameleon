@@ -8,13 +8,13 @@ import json
 # 导入env配置
 import nonebot
 from nonebot.adapters.onebot.v11 import MessageSegment
-from datetime import datetime
+from datetime import datetime, timezone
 import asyncio
 import random
 import httpx
 from .getEmoticons import select_emoticon
 
-from .getHistory import get_history
+from .getHistory import get_history,get_history_by_group_id
 
 config = nonebot.get_driver().config
 # 初始化openai
@@ -22,11 +22,11 @@ aclient = AsyncOpenAI(
     api_key=config.ark_api_key,
     base_url=config.base_url  # 兼容第三方代理
 )
-time_now = datetime.now()
+time_now = datetime.now(timezone.utc)
 
 img_api_url = config.img_api_url
 
-system_prompt = f'''
+system_prompt_response = f'''
 现在的时间是{time_now.strftime("%Y-%m-%d %H:%M:%S")}，你需要结合当前的时间回复
 人设：
 你是群聊的活跃成员"星星（Star.）"，20岁计算机系女生，{config.school}毕业。具有以下立体人格特征：
@@ -68,7 +68,7 @@ system_prompt = f'''
 - 每3条消息至少带1个表情
 - 被怼时必带攻击性表情
 - 分享趣事时带吃瓜类表情
-- 如果要回复表情可以选择表情关键词，例如：养你、熬夜、吃瓜、网恋、老实点、熊本熊、捂住、骂人、嘻皮笑脸、无语等等，你根据当前语境选择的关键词都行，回复到"reply_face"字段
+- 如果要回复表情可以选择表情关键词，例如：开心、熬夜、吃瓜、委屈、老实点、不开心、捂住、骂人、嘻皮笑脸、无语、哭等等，你根据当前语境选择的关键词都行，回复到"reply_face"字段
 
 回复规则：(如果"历史消息"中存在"用户"为"ME"的消息，则此消息是你发送的)
 【人类应答核心原则】
@@ -82,6 +82,7 @@ system_prompt = f'''
 - 必要装傻："完全听不懂你在说什么.jpg"
 
 3. 复读机效应
+- 如果"历史消息"中重复消息的用户为"ME"，则不要复读
 - 如果"历史消息"中最近两条消息大体一致，你也可以回复类似消息
 
 【真实对话样本库】
@@ -169,7 +170,7 @@ async def message_response(bot: Bot, event: MessageEvent,imgMessage:str = "",toM
     response = await aclient.chat.completions.create(
         model=config.model,
         messages=[
-            {"role": "user", "content": system_prompt},
+            {"role": "user", "content": system_prompt_response},
             {"role": "user", "content": history_text}  # 使用转换后的纯文本
         ],
         response_format={
@@ -187,7 +188,7 @@ async def message_response(bot: Bot, event: MessageEvent,imgMessage:str = "",toM
         reply_text = reply['reply_text']
         await bot.send(event, MessageSegment.text(reply_text))
         # 只有在最后一轮回复，才会回复表情包
-        if response_content.index(reply) == len(response_content) - 1 and random.random() < 0.3:  # 暂时取消表情包库回复
+        if response_content.index(reply) == len(response_content) - 1 and random.random() < 0.3:
             if 'reply_face' in reply:
                 emoticon = await select_emoticon(history, message_text, reply['reply_text'],reply['reply_face'])
                 if emoticon:
@@ -198,17 +199,50 @@ async def message_response(bot: Bot, event: MessageEvent,imgMessage:str = "",toM
             await asyncio.sleep(reply_time)
 
 
-async def reply_face_api(keyword:str):
-    params = {
-        "keyword": keyword,
-        "pageNum": 1,
-        "pageSize": 1
-    }
-    async with httpx.AsyncClient() as client:
-        response = await client.get(img_api_url, params=params)
-        response_data = response.json()
-        if response_data:
-            logger.info(response_data['items'][0]['url'])
-            return response_data['items'][0]['url']
-        else:
-            return None
+
+# 活跃群聊
+async def active_group(bot: Bot, group_id:str, last_time:datetime):
+    # 确保 last_time 也有时区信息
+    if last_time.tzinfo is None:
+        last_time = last_time.replace(tzinfo=timezone.utc)  # 或使用相同时区
+    
+    logger.info("开始处理消息")
+    system_prompt_active = system_prompt_response + f'''
+    现在的时间是{time_now.strftime("%Y-%m-%d %H:%M:%S")}，你需要结合当前的时间回复
+    上一次活跃时间：{last_time.strftime("%Y-%m-%d %H:%M:%S")}
+    现在距离上一次活跃时间已经过去了{(time_now - last_time).total_seconds()}秒
+    请根据当前的时间和历史消息，根据上下文群友的聊天内容，新开一个话题，例如：最近的新闻（你可以联网搜索）
+    '''
+    history = await get_history_by_group_id(group_id)
+    history_text = f"历史消息：\n{history}"
+    logger.info(history_text)
+    response = await aclient.chat.completions.create(
+        model=config.model,
+        messages=[
+            {"role": "user", "content": system_prompt_active},
+            {"role": "user", "content": history_text}  # 使用转换后的纯文本
+        ],
+        response_format={
+            'type': 'json_object'
+        },
+        max_tokens=1024,
+        temperature=0.6,
+        stream=False
+    )
+    logger.info(response.choices[0].message.content)
+    # 将json转换为字典
+    response_content = json.loads(response.choices[0].message.content)
+    for reply in response_content:
+        # 提取回复内容
+        reply_text = reply['reply_text']
+        await bot.send_group_msg(group_id=group_id, message=MessageSegment.text(reply_text))
+        # 只有在最后一轮回复，才会回复表情包
+        if response_content.index(reply) == len(response_content) - 1 and random.random() < 0.3:
+            if 'reply_face' in reply:
+                emoticon = await select_emoticon(history, "无", reply['reply_text'],reply['reply_face'])
+                if emoticon:
+                    await bot.send_group_msg(group_id=group_id, message=MessageSegment.image(f"base64://{emoticon}"))
+        # 提取回复时间
+        if 'reply_time' in reply:
+            reply_time = reply['reply_time']
+            await asyncio.sleep(reply_time)

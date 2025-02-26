@@ -1,46 +1,38 @@
 from nonebot.plugin import on_message
-from nonebot.adapters.onebot.v11 import Bot, MessageEvent, MessageSegment, GroupMessageEvent
+from nonebot.adapters.onebot.v11 import Bot, MessageEvent, MessageSegment, GroupMessageEvent, PrivateMessageEvent
 from nonebot.log import logger
 from nonebot.rule import Rule,to_me
 from hunchibot.plugins.HunChi.service import save_message,message_response,get_history,analyze_img
+from nonebot.exception import FinishedException
 import random
 
-message = on_message(priority=9,block=True)
+msg = on_message(priority=10)
+msg_toMe = on_message(rule=to_me(), priority=9)
 
-msg_handler = on_message(rule=to_me(), priority=10,block=True)
 
-@msg_handler.handle()
-async def handle_at(bot: Bot, event: GroupMessageEvent):
-    logger.info("检测到被@，正在处理...")
+async def process_message(bot: Bot, event: MessageEvent, always_respond: bool = False):
     images = [seg for seg in event.message if seg.type == "image"]
+    img_message = None
     
     if images:
-        # 获取第一张图片的URL并分析
         img_url = images[0].data["url"]
         img_message = await analyze_img(img_url)
-        await save_message(bot, event, img_message)
-    else:
-        await save_message(bot, event)
-    await message_response(bot, event,toMe=True)
+    logger.info(f"保存消息...")
+    await save_message(bot, event, img_message if images else None)
+    
+    if always_respond or random.random() < 0.2:
+        await message_response(bot, event, img_message if images else None, toMe=always_respond)
+        
+@msg_toMe.handle()
+async def handle_at(bot: Bot, event: MessageEvent):
+    logger.info("检测到被@或私聊，正在处理...")
+    await process_message(bot, event, always_respond=True)
 
-@message.handle()
+@msg.handle()
 async def handle_message(bot: Bot, event: MessageEvent):
-    # 提取所有图片消息段
-    images = [seg for seg in event.message if seg.type == "image"]
-    
-    if images:
-        # 获取第一张图片的URL并分析
-        img_url = images[0].data["url"]
-        img_message = await analyze_img(img_url)
-        await save_message(bot, event, img_message)
+    if isinstance(event, GroupMessageEvent):
+        await process_message(bot, event)
     else:
-        await save_message(bot, event)
-
-    # 私人消息直接响应
-    if event.message_type == "private":
-        await message_response(bot, event, img_message if images else None,toMe=True)
-    else:
-        # 群消息随机决定是否响应
-        if random.random() < 0.2:
-            await message_response(bot, event, img_message if images else None)
+        logger.info("检测到私聊消息，正在处理...")
+        await process_message(bot, event)
     
