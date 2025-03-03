@@ -57,6 +57,9 @@ system_prompt_response = f'''
 
 【注意】：群里有些消息并不是对你说的，而是对群友说的，你可以选择附和，也可以选择不附和
 
+【是否回复】
+- 若群友发的消息你觉得群友没有说完或者没有回复的价值，则在"is_reply"字段中回复false,并且其他的字段为空
+- 若群友发的消息你觉得群友有回复的价值，则在"is_reply"字段中回复true
 
 对话示例：
 情况1：被问在干嘛
@@ -65,7 +68,6 @@ system_prompt_response = f'''
 
 
 表情策略：
-- 每3条消息至少带1个表情
 - 被怼时必带攻击性表情
 - 分享趣事时带吃瓜类表情
 - 如果要回复表情可以选择表情关键词，例如：开心、熬夜、吃瓜、委屈、老实点、不开心、捂住、骂人、嘻皮笑脸、无语、哭等等，你根据当前语境选择的关键词都行，回复到"reply_face"字段
@@ -119,12 +121,14 @@ bot回复选项：
 回复格式为json数组
 [
     {{
+        "is_reply": true, 或者 false, 表示是否回复，如果为false，则不回复
         "reply_type": "text" 或者 "voice",
         "reply_text": "回复内容",
         "reply_face": "表情关键词",  
         "reply_time": "下一条消息间隔时间，单位秒,不超过10秒"
     }},
     {{
+        "is_reply": true, 或者 false, 表示是否回复，如果为false，则不回复
         "reply_type": "text" 或者 "voice",
         "reply_text": "回复内容",
         "reply_face": "表情关键词",  
@@ -139,6 +143,8 @@ bot回复选项：
 正确的回复格式：
 [
     {{
+        "is_reply": true,
+        "reply_type": "text",
         "reply_text": "老婆可以不止一个。（暴论",
         "reply_face": "表情id",  
         "reply_time": "下一条消息间隔时间，单位秒,不超过10秒"
@@ -148,6 +154,8 @@ bot回复选项：
 错误的回复格式：
 ```json
 {{
+    "is_reply": true,
+    "reply_type": "text",
     "reply_text": "来啊，我反手就是一个代码报错护体[doge]",
     "reply_face": "任意一个表情id",
     "reply_time": "下一条消息间隔时间，单位秒,不超过10秒"
@@ -219,12 +227,13 @@ async def active_group(bot: Bot, group_id:str, last_time:datetime):
     if last_time.tzinfo is None:
         last_time = last_time.replace(tzinfo=timezone.utc)  # 或使用相同时区
     
-    logger.info("开始处理消息")
+    logger.info("开始活跃群聊")
     system_prompt_active = system_prompt_response + f'''
     现在的时间是{time_now.strftime("%Y-%m-%d %H:%M:%S")}，你需要结合当前的时间回复
     上一次活跃时间：{last_time.strftime("%Y-%m-%d %H:%M:%S")}
     现在距离上一次活跃时间已经过去了{(time_now - last_time).total_seconds()}秒
     请根据当前的时间和历史消息，根据上下文群友的聊天内容，新开一个话题，例如：最近的新闻（你可以联网搜索）
+    【注意】一般活跃群聊只回复一条消息，或者一条语音。不过你也可以选择回复多条消息。
     '''
     history = await get_history_by_group_id(group_id)
     history_text = f"历史消息：\n{history}"
@@ -248,7 +257,8 @@ async def active_group(bot: Bot, group_id:str, last_time:datetime):
     for reply in response_content:
         # 提取回复内容
         reply_text = reply['reply_text']
-        await bot.send_group_msg(group_id=group_id, message=MessageSegment.text(reply_text))
+        if reply['is_reply']:
+            await bot.send_group_msg(group_id=group_id, message=MessageSegment.text(reply_text))
         # 只有在最后一轮回复，才会回复表情包
         if response_content.index(reply) == len(response_content) - 1 and random.random() < 0.3:
             if 'reply_face' in reply:

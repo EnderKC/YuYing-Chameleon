@@ -20,7 +20,7 @@ async def process_message(bot: Bot, event: MessageEvent, always_respond: bool = 
     logger.info(f"保存消息...")
     await save_message(bot, event, img_message if images else None)
     
-    if always_respond or random.random() < 0.2:
+    if always_respond or random.random() < 0.18:
         await message_response(bot, event, img_message if images else None, toMe=always_respond)
         
 @msg_toMe.handle()
