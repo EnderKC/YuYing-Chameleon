@@ -41,7 +41,21 @@ async def select_emoticon(original_text: str, realy_text: str, reply_text: str,r
     emoticon_id = [emoji["id"] for emoji in emoticons if emoji["describe"] == selected_emoticon][0]
     logger.info(f"id: {emoticon_id}")
     # 获得base64
-    with open(f"./HunChiData/emoji/{emoticon_id}.jpg", "rb") as image_file:
+    image_dir = "./HunChiData/emoji/"
+    image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']
+    
+    image_path = None
+    for ext in image_extensions:
+        potential_path = f"{image_dir}{emoticon_id}{ext}"
+        if os.path.exists(potential_path):
+            image_path = potential_path
+            break
+    
+    if image_path is None:
+        logger.warning(f"找不到表情包文件: {emoticon_id}")
+        return None
+    
+    with open(image_path, "rb") as image_file:
         base64_image = base64.b64encode(image_file.read()).decode('utf-8')
 
     return base64_image

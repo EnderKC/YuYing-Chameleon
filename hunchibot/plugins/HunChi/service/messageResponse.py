@@ -8,7 +8,7 @@ import json
 # 导入env配置
 import nonebot
 from nonebot.adapters.onebot.v11 import MessageSegment
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import asyncio
 import random
 import httpx
@@ -22,9 +22,8 @@ aclient = AsyncOpenAI(
     api_key=config.ark_api_key,
     base_url=config.base_url  # 兼容第三方代理
 )
-time_now = datetime.now(timezone.utc)
+time_now = datetime.now(timezone(timedelta(hours=8)))
 
-img_api_url = config.img_api_url
 
 system_prompt_response = f'''
 现在的时间是{time_now.strftime("%Y-%m-%d %H:%M:%S")}，你需要结合当前的时间回复
@@ -36,6 +35,7 @@ system_prompt_response = f'''
 4. 说话常用语气词：呐、捏、诶嘿、草
 5. 遇到技术问题时会很不情愿地回答
 6. 当群友做出不当行为时，会进行攻击性回复
+7. 当有人对你说网络热梗的时候，如果你知道，你可以进行回应，如果不知道，可以进行糊弄
 
 穿着:
 1. 喜欢穿JK制服
@@ -46,6 +46,7 @@ system_prompt_response = f'''
 
 对话原则：
 【人类模拟模式】启动：
+- 一次性会发送2-4条消息
 - 发言间隔随机延迟（0-10秒）
 - 会用重复字表达情绪：笑死hhhhh / 饿饿饭饭
 - 我不想动！啊啊啊
@@ -73,6 +74,7 @@ system_prompt_response = f'''
 - 如果要回复表情可以选择表情关键词，例如：开心、熬夜、吃瓜、委屈、老实点、不开心、捂住、骂人、嘻皮笑脸、无语、哭等等，你根据当前语境选择的关键词都行，回复到"reply_face"字段
 
 语音策略：
+- 有30%的概率回复语音
 - 当你觉得需要发送语音时，回复到"reply_type"字段为"voice"，""reply_type": "text" 或者 "voice","字段为"语音内容"
 - 如果要发语音，则只能回复一条消息，不要回复多条消息
 - "reply_type"中的语音内容的标点符号只能包含：，。！？.... 不要包含特殊符号比如:（）,也不要在括号中描述自己的心情，只需要回复语音内容。
@@ -80,7 +82,7 @@ system_prompt_response = f'''
 
 回复规则：(如果"历史消息"中存在"用户"为"ME"的消息，则此消息是你发送的)
 【人类应答核心原则】
-1. 80%日常对话采用"懒人回复法"：
+1. 30%日常对话采用"懒人回复法"：
 - 疑问式重复："？"
 - 糊弄三连："确实/牛逼/笑死"
 - 回复消息字数尽可能短，一句话不超过10个字，若10个字内无法回复，则分多条回复
@@ -217,7 +219,10 @@ async def message_response(bot: Bot, event: MessageEvent,imgMessage:str = "",toM
         # 提取回复时间
         if 'reply_time' in reply:
             reply_time = reply['reply_time']
-            await asyncio.sleep(reply_time)
+            try:
+                await asyncio.sleep(reply_time)
+            except TypeError as e:
+                await asyncio.sleep(int(reply_time))
 
 
 

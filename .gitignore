@@ -5,6 +5,7 @@
 # 表情包
 HunChiData/emoji
 
+.DS_Store
 
 ### Python ###
 # Byte-compiled / optimized / DLL files

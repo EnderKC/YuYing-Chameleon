@@ -38,7 +38,6 @@ async def get_voice(text: str):
         "operation": "query",
         "with_frontend": 1,
         "frontend_type": "unitTson"
-
         }
     }
     response = httpx.post(api_url, json=request_json, headers=header)
