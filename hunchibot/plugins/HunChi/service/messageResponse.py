@@ -15,7 +15,7 @@ import httpx
 from .getEmoticons import select_emoticon
 from .getVoice import get_voice
 from .getHistory import get_history,get_history_by_group_id
-
+from hunchibot.plugins.HunChi.db import MessageContentType
 config = nonebot.get_driver().config
 # 初始化openai
 aclient = AsyncOpenAI(
@@ -172,25 +172,22 @@ async def message_response(bot: Bot, event: MessageEvent,imgMessage:str = "",toM
     # 将消息转换为纯文本
     if imgMessage:
         message_text = {
-            "用户": event.sender.nickname,
-            "用户id": event.user_id,
-            "消息": imgMessage
+            "user_name": event.sender.nickname,
+            "user_id": event.user_id,
+            "message": imgMessage,
+            "message_content_type": MessageContentType.IMAGE
         }
     else:
         message_text = {
-            "用户": event.sender.nickname,
-            "用户id": event.user_id,
-            "消息": event.get_plaintext()
+            "user_name": event.sender.nickname,
+            "user_id": event.user_id,
+            "message": event.get_plaintext(),
+            "message_content_type": MessageContentType.TEXT
         }
     history = await get_history(bot, event)
-    history_text = f"历史消息：\n{history}\n当前消息：\n{message_text} [是否对你说：{toMe}]"
-    logger.info(history_text)
     response = await aclient.chat.completions.create(
         model=config.model,
-        messages=[
-            {"role": "user", "content": system_prompt_response},
-            {"role": "user", "content": history_text}  # 使用转换后的纯文本
-        ],
+        messages=await get_message_text(message_text,history,toMe),
         response_format={
             'type': 'json_object'
         },
@@ -224,6 +221,28 @@ async def message_response(bot: Bot, event: MessageEvent,imgMessage:str = "",toM
             except TypeError as e:
                 await asyncio.sleep(int(reply_time))
 
+# 拼接传入消息
+async def get_message_text(message:str,history:list,toMe:bool) -> list:
+    result = [
+        {'role': 'system', 'content': system_prompt_response},
+    ]
+    for history_message in history:
+        if history_message['message_content_type'] == MessageContentType.TEXT:
+            result.append({'role': 'user', 'content': f"{history_message['user_name']}: {history_message['message']}"})
+        elif history_message['message_content_type'] == MessageContentType.IMAGE:
+            result.append({'role': 'user', 'content': [
+                {'type': 'text', 'text': f"{history_message['user_name']}: 发送了图片如下："},
+                {'type': 'image_url', 'image_url': {'url': history_message['message']}}
+            ]})
+    if message['message_content_type'] == MessageContentType.TEXT:
+        result.append({'role': 'user', 'content': f"{message['user_name']}: {message['message']}（当前消息，是否对你说：{toMe}）"})
+    elif message['message_content_type'] == MessageContentType.IMAGE:
+        result.append({'role': 'user', 'content': [
+            {'type': 'text', 'text': f"{message['user_name']}: 发送了图片如下：（当前消息，是否对你说：{toMe}）"},
+            {'type': 'image_url', 'image_url': {'url': f"data:image/jpeg;base64,{message['message']}"}}
+        ]})
+    return result
+    
 
 
 # 活跃群聊

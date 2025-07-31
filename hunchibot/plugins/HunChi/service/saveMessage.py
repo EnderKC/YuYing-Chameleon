@@ -1,12 +1,13 @@
 from tortoise import Tortoise
 from nonebot.adapters.onebot.v11 import Message, MessageEvent, Bot
-from hunchibot.plugins.HunChi.db import MessageModel, GroupModel
+from hunchibot.plugins.HunChi.db import MessageModel, GroupModel, MessageContentType
 from nonebot.log import logger
-
+import aiofiles
+import base64
 # @Description: 保存消息
 # @Param: message: Message
 # @Return: None
-async def save_message(bot: Bot,event: MessageEvent,imgMessage:str = "") -> None:
+async def save_message(bot: Bot,event: MessageEvent,imgMessage:str = None) -> None:
     logger.info("保存消息中...")
     if event.message_type == "group":
         await check_group_exist(bot,event)
@@ -34,10 +35,11 @@ async def check_group_exist(bot: Bot,event: MessageEvent) -> bool:
 # @Description: 保存消息到数据库
 # @Param: message: Message
 # @Return: None
-async def save_message_to_db(event: MessageEvent,group_id: int = 0,friend_id: int = 0,imgMessage:str = "") -> None:
+async def save_message_to_db(event: MessageEvent,group_id: int = 0,friend_id: int = 0,imgMessage:str = None) -> None:
     message_id = event.message_id
     if imgMessage:
-        message = '【图片】:' + imgMessage
+        # 图片的base64
+        message = f"data:image/jpeg;base64,{imgMessage}"
     else:
         message = event.message
     message_type = event.message_type
@@ -49,9 +51,10 @@ async def save_message_to_db(event: MessageEvent,group_id: int = 0,friend_id: in
         friend_id=friend_id,
         message=message,
         message_type=message_type,
+        message_content_type=MessageContentType.IMAGE if imgMessage else MessageContentType.TEXT,
         message_sender_id=message_sender_id,
         message_sender_name=message_sender_name
     )
-    logger.info(message_saver)
+    logger.info(f"message_saver: {message_saver.message_content_type}")
     await message_saver.save()
 

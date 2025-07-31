@@ -1,7 +1,12 @@
 from nonebot import get_driver
+from enum import Enum
 
 from tortoise import fields, models
 from tortoise import Tortoise
+
+class MessageContentType(str, Enum):
+    TEXT = "text"
+    IMAGE = "image"
 
 class MessageModel(models.Model):
     message_id = fields.IntField(pk=True)
@@ -10,6 +15,7 @@ class MessageModel(models.Model):
     message = fields.TextField()
     message_time = fields.DatetimeField(auto_now_add=True)
     message_type = fields.TextField()
+    message_content_type = fields.CharEnumField(MessageContentType, max_length=20)
     message_sender_id = fields.TextField()
     message_sender_name = fields.TextField()
 

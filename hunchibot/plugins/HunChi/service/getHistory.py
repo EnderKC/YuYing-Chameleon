@@ -14,9 +14,10 @@ async def get_history_by_group_id(group_id:str) -> list:
     messages = await MessageModel.filter(group_id=group_id).order_by('-message_time').limit(20).all()
     formatted_messages = [
         {
-            "用户id": message.message_sender_id,
-            "用户": message.message_sender_name,
-            "消息": message.message
+            "user_id": message.message_sender_id,
+            "user_name": message.message_sender_name,
+            "message": message.message,
+            "message_content_type": message.message_content_type,
         }
         for message in reversed(messages)
     ]
@@ -29,9 +30,10 @@ async def get_group_history(bot: Bot, event: MessageEvent) -> list:
     # 构建包含发送者信息的消息列表
     formatted_messages = [
         {
-            "用户id": message.message_sender_id,
-            "用户": message.message_sender_name,
-            "消息": message.message
+            "user_id": message.message_sender_id,
+            "user_name": message.message_sender_name,
+            "message": message.message,
+            "message_content_type": message.message_content_type,
         }
         for message in reversed(messages)
     ]
@@ -44,9 +46,10 @@ async def get_friend_history(bot: Bot, event: MessageEvent) -> list:
     # 构建包含发送者信息的消息列表
     formatted_messages = [
         {
-            "sender_id": message.message_sender_id,
-            "sender_name": message.message_sender_name,
-            "message": message.message
+            "user_id": message.message_sender_id,
+            "user_name": message.message_sender_name,
+            "message": message.message,
+            "message_content_type": message.message_content_type,
         }
         for message in reversed(messages)
     ]
