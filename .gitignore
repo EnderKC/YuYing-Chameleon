@@ -1,12 +1,20 @@
 
 # Created by https://www.toptal.com/developers/gitignore/api/python
 # Edit at https://www.toptal.com/developers/gitignore?templates=python
-
-# 表情包
-HunChiData/emoji
-HunChiData/person_img
-
+*.db
+*.db-shm 
+*.db-wal
+*.img
 .DS_Store
+.vscode
+.idea
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.pytype
+.pyre
+.dmypy.json
+.dmypy.json
 
 ### Python ###
 # Byte-compiled / optimized / DLL files
@@ -72,8 +80,6 @@ pytestdebug.log
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
-db.sqlite3-shm
-db.sqlite3-wal
 
 # Flask stuff:
 instance/
@@ -117,8 +123,9 @@ celerybeat.pid
 *.sage.py
 
 # Environments
-.env
 .env.dev
+.dev.prod
+
 .venv
 env/
 venv/
@@ -146,5 +153,8 @@ dmypy.json
 
 # pytype static type analyzer
 .pytype/
+
+大模型提示词/
+config.toml
 
 # End of https://www.toptal.com/developers/gitignore/api/python

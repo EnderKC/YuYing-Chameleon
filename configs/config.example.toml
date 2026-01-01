@@ -1,0 +1,105 @@
+[yuying_chameleon]
+# API 提供方（用于自动填充合理默认值；具体仍以 base_url/model 配置为准）
+# 支持分别为 主 LLM / 便宜 LLM / Embedder 指定不同提供商：
+# - openai: OpenAI 官方/兼容网关
+# - ark: 火山方舟 OpenAI 兼容网关
+api_provider = "openai"        # 全局默认（未配置独立 provider 时生效）
+main_provider = ""             # 可选：主 LLM provider，留空则用 api_provider
+cheap_llm_provider = ""        # 可选：便宜 LLM provider，留空则用 api_provider
+embedder_provider = ""         # 可选：Embedding provider，留空则用 api_provider
+
+# 机器人基础设置
+superusers = ["123456789"]
+nickname = ["YuYing"]
+
+# 数据库设置
+database_url = "sqlite+aiosqlite:///data/yuying.db"
+# 说明：SQLite 的 PRAGMA 相关设置在引擎初始化时按设计写死
+sqlite_busy_timeout_ms = 3000
+
+# Qdrant 向量库设置
+qdrant_host = "localhost"
+qdrant_port = 6333
+qdrant_api_key = ""       # 可选
+qdrant_https = false      # 可选：本地一般为 false，Qdrant Cloud 一般为 true
+qdrant_recreate_collections = false  # 可选：维度变化时自动删除并重建（有数据丢失风险）
+retrieval_topk = 5
+retrieval_snippet_max_chars = 120
+
+# OpenAI / LLM 设置
+openai_base_url = "https://api.openai.com/v1"
+openai_api_key = "sk-..."
+openai_model = "gpt-4-turbo"
+openai_timeout = 30.0
+
+# OpenAI Python SDK 默认请求头（可选）
+# - 作用: 透传给 openai.AsyncOpenAI(default_headers=...)，常用于设置 User-Agent
+# - 写法: TOML inline table（key 如含 '-' 建议加引号）
+# - 示例: openai_default_headers = { "User-Agent" = "YuYing-Chameleon/1.0" }
+# openai_default_headers = { "User-Agent" = "YuYing-Chameleon/1.0" }
+
+cheap_llm_base_url = "https://api.openai.com/v1"
+cheap_llm_api_key = "sk-..."
+cheap_llm_model = "gpt-3.5-turbo"
+cheap_llm_timeout = 10.0
+
+embedder_base_url = "https://api.openai.com/v1"
+embedder_api_key = "sk-..."
+embedder_model = "text-embedding-3-small"
+embedder_endpoint = "/embeddings"     # 可选：火山方舟多模态为 `/embeddings/multimodal`（但文本索引建议用 `/embeddings` + 文本向量模型）
+embedder_timeout = 30.0              # 可选：embedding 请求超时（秒）
+vector_size = 2048                   # 可选：向量维度（需与 embedding 输出一致）
+
+# 媒体理解设置（图片说明/OCR）
+# 说明：
+# - 图片说明/OCR 完全复用 cheap_llm_* 配置（需要支持图片输入的多模态模型）；
+# - 若图片任务更易超时/更慢，请调大 cheap_llm_timeout（图片任务不再使用独立超时配置）。
+media_enable_ocr = false             # 可选：图片预处理是否做 OCR（默认关闭，仅 caption）
+
+# 记忆设置
+memory_effective_count_threshold = 50
+memory_condense_hour = 3              # 凌晨 03:00
+memory_core_limit = 20
+memory_active_ttl_days = 7
+memory_idle_seconds = 120
+memory_overlap_messages = 10
+memory_extract_max_messages = 60
+memory_archive_days = 90
+
+# 表情包设置
+sticker_promote_threshold = 3
+sticker_cooldown_seconds = 60
+sticker_meme_score_threshold = 3
+
+# Nano 模型设置（用于心流模式的前置决策）
+nano_llm_base_url = "https://api.openai.com/v1"
+nano_llm_api_key = "sk-..."
+nano_llm_model = "gpt-4o-mini"
+nano_llm_timeout = 5.0
+nano_llm_provider = ""  # 可选：nano LLM provider，留空则用 api_provider
+
+# 回复策略设置
+global_cooldown_seconds = 30
+group_cooldown_seconds = 60
+group_reply_probability = 0.15
+private_reply_probability = 1.0
+spam_window_seconds = 30
+spam_msg_threshold = 12
+action_max_count = 4
+action_min_delay_ms = 300
+action_max_delay_ms = 900
+reply_text_max_chars = 40
+
+# 心流模式设置
+# 说明：心流模式使用 nano 模型作为前置判断，决定是否回复每条消息
+# 优点：更智能的回复决策，能理解上下文
+# 缺点：会增加模型消耗和处理延迟
+enable_flow_mode = false  # 是否启用心流模式
+flow_mode_global_cooldown_seconds = 30  # 心流模式下的全局冷却时间
+flow_mode_group_cooldown_seconds = 60  # 心流模式下的群聊冷却时间
+flow_mode_group_check_probability = 0.8  # 心流模式下群聊消息被检测的概率（80%）
+flow_mode_private_check_probability = 1.0  # 心流模式下私聊消息被检测的概率（100%）
+
+# 摘要设置
+summary_window_message_count = 20
+summary_window_seconds = 900
