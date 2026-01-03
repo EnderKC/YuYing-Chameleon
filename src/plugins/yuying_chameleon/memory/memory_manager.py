@@ -43,8 +43,8 @@
 
 可见性控制(visibility字段):
 - global: 全局可见,所有场景都可注入
-- group_only: 仅群聊可见,且仅在特定群(scope_scene_id)
-- private_only: 仅私聊可见
+- scene: 场景限定,仅特定场景(scope_scene_id)可见(群聊/私聊均可)
+- private: 仅私聊可见
 
 使用方式:
 ```python
@@ -465,7 +465,11 @@ class MemoryManager:
         # await MemoryManager.upsert_memories(): 批量写入/更新记忆
         # - 参数: 用户QQ号, 记忆数据列表
         # - 功能: 去重、冲突检测、写入数据库、创建索引任务
-        await MemoryManager.upsert_memories(qq_id, extracted)
+        await MemoryManager.upsert_memories(
+            qq_id,
+            extracted,
+            default_ttl_days=int(plugin_config.yuying_memory_active_ttl_days),
+        )
 
         # ==================== 步骤8: 更新last_memory_msg_id(记录断点) ====================
 
@@ -627,7 +631,12 @@ class MemoryManager:
         return core_memories[: int(plugin_config.yuying_memory_core_limit)] + selected_active
 
     @staticmethod
-    async def upsert_memories(qq_id: str, memories_data: List[dict]) -> None:
+    async def upsert_memories(
+        qq_id: str,
+        memories_data: List[dict],
+        *,
+        default_ttl_days: Optional[int] = None,
+    ) -> None:
         """将抽取到的记忆写入active层(包含去重与简单冲突标记)
 
         这个方法的作用:
@@ -674,6 +683,9 @@ class MemoryManager:
                     },
                     ...
                   ]
+            default_ttl_days: 默认 TTL(天)
+                - None: 当 mem_data 未提供/为空/<=0 时,使用配置 yuying_memory_active_ttl_days
+                - 有值: 当 mem_data 未提供/为空/<=0 时,使用该默认值(用于批量抽取场景)
 
         Side Effects:
             - 写入Memory表(新记忆)
@@ -706,6 +718,8 @@ class MemoryManager:
 
         # ==================== 步骤2: 遍历每条记忆数据 ====================
 
+        _missing = object()
+
         for mem_data in memories_data:
             # ==================== 步骤2.1: 提取和验证content字段 ====================
 
@@ -734,14 +748,19 @@ class MemoryManager:
             # str(mem_data.get("visibility") or "global").strip(): 可见性
             # - 默认值: "global"
             visibility = str(mem_data.get("visibility") or "global").strip()
+            # 兼容旧枚举: group_only/private_only → scene/private
+            if visibility == "group_only":
+                visibility = "scene"
+            elif visibility == "private_only":
+                visibility = "private"
 
             # mem_data.get("scope_scene_id"): 作用域场景ID
             # - 可选字段,可能是None
             scope_scene_id = mem_data.get("scope_scene_id")
 
-            # mem_data.get("ttl_days"): 生存时间(天)
-            # - 可选字段,可能是None
-            ttl_days = mem_data.get("ttl_days")
+            # ttl_days: 生存时间(天)
+            # - active 记忆统一要求有 TTL; 未提供/为空/<=0 时,使用默认 TTL
+            ttl_days_raw = mem_data.get("ttl_days", _missing)
 
             # mem_data.get("evidence_msg_ids") or []: 证据消息ID列表
             # - 默认值: 空列表
@@ -758,6 +777,18 @@ class MemoryManager:
             # - max(0.0, ...): 不能小于0
             # - min(1.0, ...): 不能大于1
             confidence = max(0.0, min(1.0, confidence))
+
+            # 规范化 ttl_days（active 层必须为正整数）
+            default_ttl = (
+                int(default_ttl_days)
+                if default_ttl_days is not None
+                else int(plugin_config.yuying_memory_active_ttl_days)
+            )
+            try:
+                ttl_int = default_ttl if (ttl_days_raw is _missing or ttl_days_raw is None) else int(ttl_days_raw)
+            except Exception:
+                ttl_int = default_ttl
+            ttl_days = ttl_int if ttl_int > 0 else default_ttl
 
             # ==================== 步骤2.4: 查找相似记忆(去重) ====================
 
@@ -780,6 +811,10 @@ class MemoryManager:
                             "confidence": max(similar.confidence, confidence),
                             # 状态重新设为active(如果之前是archived)
                             "status": "active",
+                            # 主动写入的“永久/场景”语义应能生效
+                            "visibility": visibility,
+                            "scope_scene_id": str(scope_scene_id) if scope_scene_id else None,
+                            "ttl_days": ttl_days,
                         },
                     ),
                     priority=5,
@@ -826,11 +861,11 @@ class MemoryManager:
                 content=content,  # 内容
                 confidence=confidence,  # 置信度
                 status=status,  # 状态: active或conflict
-                visibility=visibility,  # 可见性: global/group_only/private_only
-                # scope_scene_id: 作用域场景ID(group_only时必需)
+                visibility=visibility,  # 可见性: global/scene/private
+                # scope_scene_id: 作用域场景ID(scene时必需)
                 scope_scene_id=str(scope_scene_id) if scope_scene_id else None,
-                # ttl_days: 生存时间(天),默认从配置读取
-                ttl_days=int(ttl_days) if ttl_days is not None else int(plugin_config.yuying_memory_active_ttl_days),
+                # ttl_days: 生存时间(天)
+                ttl_days=ttl_days,
             )
 
             # ==================== 步骤2.8: 写入数据库 ====================
@@ -976,7 +1011,8 @@ class MemoryManager:
                 # 要求3: 置信度范围
                 "- confidence 为 0~1。",
                 # 要求4: 可见性枚举
-                "- visibility 只能是 global/group_only/private_only。",
+                "- visibility 只能是 global/scene/private。",
+                "- visibility=scene 时 scope_scene_id 必须等于当前场景 scene_id。",
                 # 要求5: 证据引用
                 "- evidence_msg_ids 必须引用上面给出的消息 id。",
                 "",  # 空行
@@ -988,6 +1024,7 @@ class MemoryManager:
                 "用户 QQ:",
                 qq_id,  # 用户QQ号
                 f"场景:{scene_type}:{scene_id}",  # 场景信息
+                f"默认 ttl_days: {int(plugin_config.yuying_memory_active_ttl_days)}",
                 "消息:",  # 消息列表标题
                 msg_lines,  # 格式化后的消息列表
             ]
@@ -1328,8 +1365,11 @@ class MemoryManager:
 
         可见性规则:
         1. global: 全局可见,所有场景都可注入
-        2. group_only: 仅群聊可见,且仅在特定群(scope_scene_id匹配)
-        3. private_only: 仅私聊可见
+        2. scene: 场景限定,仅 scope_scene_id==scene_id 时可注入(群聊/私聊均可)
+        3. private: 仅私聊可见
+        兼容旧值:
+        - group_only ≈ scene(仅群聊)
+        - private_only ≈ private
 
         为什么需要可见性控制?
         - 隐私: 私聊的记忆不应该在群聊中暴露
@@ -1385,18 +1425,20 @@ class MemoryManager:
         """
 
         # ==================== 情况1: global可见性 ====================
+        visibility = (visibility or "").strip()
         if visibility == "global":
             return True  # 全局可见,所有场景都允许
 
-        # ==================== 情况2: group_only可见性 ====================
-        if visibility == "group_only":
-            # 条件1: 当前场景必须是群聊
-            # 条件2: scope_scene_id必须匹配当前群号
-            return scene_type == "group" and scope_scene_id == scene_id
+        # ==================== 情况2: scene/group_only 可见性 ====================
+        if visibility in {"scene", "group_only"}:
+            if not scope_scene_id:
+                return False
+            if visibility == "group_only" and scene_type != "group":
+                return False
+            return scope_scene_id == scene_id
 
-        # ==================== 情况3: private_only可见性 ====================
-        if visibility == "private_only":
-            # 条件: 当前场景必须是私聊
+        # ==================== 情况3: private/private_only 可见性 ====================
+        if visibility in {"private", "private_only"}:
             return scene_type == "private"
 
         # ==================== 其他情况: 未知可见性 ====================

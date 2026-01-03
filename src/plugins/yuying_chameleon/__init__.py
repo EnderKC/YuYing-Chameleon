@@ -19,7 +19,8 @@ from nonebot.adapters.onebot.v11 import Bot, Event
 from nonebot.plugin import PluginMetadata
 from nonebot import logger
 
-from .config import Config
+from .config import Config, plugin_config
+from .llm.mcp_manager import mcp_manager
 from .memory.memory_manager import MemoryManager
 from .planner.action_planner import ActionPlanner
 from .planner.action_sender import ActionSender
@@ -72,7 +73,7 @@ def _format_recent_dialogue_line(
     if is_bot:
         who = "你"
     elif sender_qq_id == current_qq_id:
-        who = "我"
+        who = f"我（{current_qq_id}）"
     else:
         who = f"群友({sender_qq_id})"
     return f"{who}：{t}"
@@ -157,96 +158,193 @@ async def _collect_image_inputs(
     return items
 
 
-async def _is_reply_to_bot(*, bot: Bot, reply_to_msg_id: Optional[int]) -> bool:
-    """判断当前消息是否回复了机器人消息。
+async def _get_reply_message_info(
+    *,
+    bot: Bot,
+    reply_to_msg_id: Optional[int],
+    timeout_seconds: float = 1.8,
+) -> Optional[Dict[str, Any]]:
+    """获取被引用（回复）消息的信息：sender_id + content（一次 get_msg 复用）。
 
     说明:
         - reply_to_msg_id 来自 OneBot 的 reply.message_id（平台消息 id）
         - 与 raw_messages.id（数据库自增 id）不是同一个 id 空间
-        - 通过 OneBot API `get_msg` 查询被回复消息的 sender.user_id 来判断
-        - 用于识别"群聊中回复bot消息但没@"的场景
+        - 使用 OneBot API `get_msg` 查询被回复消息详情
+        - 尽最大努力提取 sender.user_id 与 message 文本（失败降级，不影响主流程）
 
     Args:
-        bot: NoneBot Bot实例,用于调用OneBot API
-        reply_to_msg_id: 被回复的消息ID,来自event.reply.message_id
+        bot: NoneBot Bot实例，用于调用 OneBot API
+        reply_to_msg_id: 被回复的消息ID，来自 event.reply.message_id
+        timeout_seconds: API 调用超时时间（秒），避免拖慢消息处理
 
     Returns:
-        bool: True表示回复的是bot消息,False表示不是或查询失败
+        Optional[Dict[str, Any]]:
+            - reply_to_msg_id 为空: 返回 None
+            - 否则返回结构化字典：
+              {
+                  "sender_id": str,      # 发送者 QQ 号
+                  "content": str,        # 消息内容（归一化后的文本）
+                  "failed": bool,        # 是否获取失败
+                  "reason": str,         # 失败原因（failed=True 时有效）
+              }
 
-    异常处理:
-        - reply_to_msg_id为空: 返回False
-        - 类型转换失败: 返回False
-        - API调用失败: 返回False(降级处理,不影响主流程)
-        - sender信息缺失: 返回False
+    失败原因分类:
+        - invalid_message_id: 消息 ID 格式错误
+        - timeout: API 调用超时
+        - not_found_or_deleted: 消息不存在或已删除
+        - permission_denied: 权限不足
+        - api_error: 其他 API 错误
+        - malformed_response: 返回数据格式异常
 
     Example:
-        >>> # 群聊中A回复了bot的消息但没@bot
-        >>> replied = await _is_reply_to_bot(bot=bot, reply_to_msg_id=12345)
-        >>> print(replied)
-        # True (这条消息应该被认为是对bot说的)
+        >>> # 群聊中 A 回复了 bot 的消息
+        >>> info = await _get_reply_message_info(bot=bot, reply_to_msg_id=12345)
+        >>> if info and not info["failed"]:
+        >>>     print(f"回复了 {info['sender_id']} 的消息: {info['content']}")
     """
 
     # ==================== 步骤1: 参数校验 ====================
 
-    # reply_to_msg_id为空: 没有回复任何消息
     if not reply_to_msg_id:
-        return False
+        return None
 
     # ==================== 步骤2: 类型转换 ====================
 
     try:
-        # 确保reply_to_msg_id是整数类型
         mid = int(reply_to_msg_id)
     except Exception:
-        # 类型转换失败: reply_to_msg_id格式错误
-        return False
+        return {
+            "sender_id": "",
+            "content": "",
+            "failed": True,
+            "reason": "invalid_message_id",
+        }
 
-    # ==================== 步骤3: 调用OneBot API查询被回复的消息 ====================
+    # ==================== 步骤3: 定义内部辅助函数 ====================
+
+    def _extract_content_from_message(message_obj: Any) -> str:
+        """将 get_msg 返回的 message 字段归一化为短文本。
+
+        处理规则:
+            - 字符串（CQ 码）: 直接返回
+            - 数组段（标准 OneBot v11）: 逐段解析为短标记
+            - 其他: 强制字符串化
+        """
+
+        if message_obj is None:
+            return ""
+
+        # 部分实现直接返回 CQ 字符串
+        if isinstance(message_obj, str):
+            return message_obj
+
+        parts: list[str] = []
+
+        # 标准 OneBot v11: message 为数组段
+        if isinstance(message_obj, list):
+            for seg in message_obj:
+                if not isinstance(seg, dict):
+                    parts.append(str(seg))
+                    continue
+
+                seg_type = str(seg.get("type") or "").strip()
+                seg_data = seg.get("data") if isinstance(seg.get("data"), dict) else {}
+
+                if seg_type == "text":
+                    parts.append(str(seg_data.get("text") or ""))
+                elif seg_type == "image":
+                    seg_ref = seg_data.get("file") or seg_data.get("file_id") or seg_data.get("url") or "unknown"
+                    parts.append(f"[image:{seg_ref}]")
+                elif seg_type == "face":
+                    parts.append(f"[face:{seg_data.get('id')}]")
+                elif seg_type == "at":
+                    parts.append(f"@{seg_data.get('qq')}")
+                else:
+                    # 其他段类型不展开，避免引入过多噪声
+                    if seg_type:
+                        parts.append(f"[{seg_type}]")
+
+            return "".join(parts)
+
+        # 兜底：未知结构直接字符串化
+        return str(message_obj)
+
+    def _classify_failure_reason(exc: Exception) -> str:
+        """将异常归类为稳定的失败原因字符串，便于 prompt 明确告知 LLM。"""
+
+        error_msg = (str(exc) or "").strip().lower()
+        if not error_msg:
+            return "api_error"
+
+        # 常见：消息不存在/已撤回/找不到
+        if any(keyword in error_msg for keyword in ["not found", "不存在", "找不到", "no such", "404"]):
+            return "not_found_or_deleted"
+
+        # 常见：权限不足
+        if any(keyword in error_msg for keyword in ["permission", "权限", "forbidden", "unauthorized"]):
+            return "permission_denied"
+
+        # 其他：统一归为 api_error
+        return "api_error"
+
+    # ==================== 步骤4: 调用 OneBot API 查询被回复的消息 ====================
 
     try:
-        # await bot.call_api("get_msg", message_id=mid): 查询消息详情
-        # - API: get_msg
-        # - 参数: message_id (平台消息ID)
-        # - 返回: 消息详情字典,包含sender/message/time等字段
-        # - 注意: 这是平台API调用,可能失败(消息已删除/权限不足等)
-        data = await bot.call_api("get_msg", message_id=mid)
-    except Exception:
-        # API调用失败: 消息可能已删除、权限不足、网络错误等
-        # 降级处理: 返回False,不影响主流程
-        return False
+        data = await asyncio.wait_for(
+            bot.call_api("get_msg", message_id=mid),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        return {
+            "sender_id": "",
+            "content": "",
+            "failed": True,
+            "reason": "timeout",
+        }
+    except Exception as exc:
+        return {
+            "sender_id": "",
+            "content": "",
+            "failed": True,
+            "reason": _classify_failure_reason(exc),
+        }
 
-    # ==================== 步骤4: 提取发送者ID ====================
+    # ==================== 步骤5: 提取发送者 ID 和消息内容 ====================
 
-    sender_id: Optional[str] = None
+    sender_id = ""
+    content = ""
 
-    # 检查返回数据是否为字典类型
     if isinstance(data, dict):
-        # 提取sender字段
+        # 提取发送者 ID
         sender = data.get("sender")
-
-        # 检查sender是否为字典类型
         if isinstance(sender, dict):
-            # 提取user_id字段
             uid = sender.get("user_id")
-
-            # 确保user_id存在
             if uid is not None:
-                # 转换为字符串(统一比较格式)
                 sender_id = str(uid)
 
-    # sender_id提取失败: 返回数据格式异常
-    if not sender_id:
-        return False
+        # 提取消息内容
+        content = _extract_content_from_message(data.get("message"))
 
-    # ==================== 步骤5: 比较发送者与bot的ID ====================
+    # 归一化内容：去除换行、前后空格
+    content = (content or "").replace("\n", " ").strip()
 
-    # getattr(bot, "self_id", ""): 获取bot自己的ID
-    # - bot.self_id: bot的QQ号
-    # - 默认值"": 防止属性不存在时报错
-    # str(...) == str(...): 统一转为字符串比较,避免类型不一致
-    # - 返回True: 被回复的消息是bot发送的
-    # - 返回False: 被回复的消息是其他用户发送的
-    return str(sender_id) == str(getattr(bot, "self_id", ""))
+    # ==================== 步骤6: 返回结构化结果 ====================
+
+    # 即使缺字段也标记 failed，避免"静默当成无引用"
+    if not sender_id and not content:
+        return {
+            "sender_id": "",
+            "content": "",
+            "failed": True,
+            "reason": "malformed_response",
+        }
+
+    return {
+        "sender_id": sender_id,
+        "content": content,
+        "failed": False,
+        "reason": "",
+    }
 
 
 async def _download_and_steal(
@@ -352,6 +450,17 @@ async def startup() -> None:
 
     # 6) 初始化定时任务
     init_scheduler()
+
+    # 7) 初始化 MCP 管理器（如果启用）
+    await mcp_manager.on_startup()
+
+
+@driver.on_shutdown
+async def shutdown() -> None:
+    """NoneBot 关闭时执行：清理资源。"""
+
+    # 关闭 MCP 管理器（关闭所有 MCP server 连接）
+    await mcp_manager.on_shutdown()
 
 
 matcher = on_message(priority=10, block=False)
@@ -467,7 +576,10 @@ async def handle_message(bot: Bot, event: Event) -> None:
 
     # 6) 回复策略 - 计算directed_to_bot
 
-    # ==================== 计算replied_to_bot ====================
+    # ==================== 获取被引用消息信息（复用 API 调用） ====================
+
+    # reply_to_message: 被引用消息信息（用于提示词显式注入）
+    reply_to_message: Optional[Dict[str, Any]] = None
 
     # replied_to_bot: 是否回复了bot的消息
     # - 仅在群聊中检查(私聊中不需要,私聊本身就是对bot说的)
@@ -479,10 +591,18 @@ async def handle_message(bot: Bot, event: Event) -> None:
         and not normalized.mentioned_bot
         and normalized.reply_to_msg_id
     ):
-        # 调用OneBot API查询被回复消息的发送者
-        # - 如果发送者是bot自己,则replied_to_bot=True
-        # - 失败降级为False,不影响主流程
-        replied_to_bot = await _is_reply_to_bot(bot=bot, reply_to_msg_id=normalized.reply_to_msg_id)
+        # 一次 get_msg 同时获取 sender_id + content，复用结果：
+        # - 用 sender_id 判断 replied_to_bot（用于 directed_to_bot 计算）
+        # - content 留作后续 prompt 注入（避免重复 API 调用）
+        reply_info = await _get_reply_message_info(
+            bot=bot,
+            reply_to_msg_id=normalized.reply_to_msg_id,
+        )
+        reply_to_message = reply_info
+
+        if reply_info and not bool(reply_info.get("failed")):
+            # 判断回复的是否是 bot 的消息
+            replied_to_bot = str(reply_info.get("sender_id") or "") == str(getattr(bot, "self_id", ""))
 
     # ==================== 计算directed_to_bot ====================
 
@@ -515,7 +635,14 @@ async def handle_message(bot: Bot, event: Event) -> None:
     if not should_reply:
         return
 
-    # 6.5) 若当前消息包含图片，且当前轮需要回复，则尝试同步补全图片说明（减少"看不懂图片"的情况）
+    # 6.5) 若本轮确定要回复，且存在引用但尚未获取引用详情，则补一次 get_msg 用于 prompt 注入
+    if normalized.reply_to_msg_id and reply_to_message is None:
+        reply_to_message = await _get_reply_message_info(
+            bot=bot,
+            reply_to_msg_id=normalized.reply_to_msg_id,
+        )
+
+    # 6.6) 若当前消息包含图片，且当前轮需要回复，则尝试同步补全图片说明（减少"看不懂图片"的情况）
     if normalized.image_ref_map and directed_to_bot:
         new_content = normalized.content
         changed = False
@@ -602,6 +729,7 @@ async def handle_message(bot: Bot, event: Event) -> None:
         scene_type=normalized.scene_type,
         scene_id=normalized.scene_id,
         current_raw_msg_id=raw_msg.id,
+        max_lines=max(0, int(getattr(plugin_config, "yuying_recent_dialogue_max_lines", 30) or 30)),
     )
     # logger.debug(f"【检索模块】返回的最近对话: {recent_dialogue}")
     # image_inputs 已在门控决策前获取，此处复用避免重复调用
@@ -622,8 +750,13 @@ async def handle_message(bot: Bot, event: Event) -> None:
         context.get("memories", []),
         context.get("rag_snippets", []),
         recent_dialogue=recent_dialogue,
+        reply_to_message=reply_to_message,
         images=image_inputs,
         meta=prompt_meta,
+        context_qq_id=normalized.qq_id,
+        context_scene_type=normalized.scene_type,
+        context_scene_id=normalized.scene_id,
+        context_raw_msg_id=raw_msg.id,
     )
 
     # 10) 分段发送（含表情包）

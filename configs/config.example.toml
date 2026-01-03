@@ -25,6 +25,9 @@ qdrant_https = false      # 可选：本地一般为 false，Qdrant Cloud 一般
 qdrant_recreate_collections = false  # 可选：维度变化时自动删除并重建（有数据丢失风险）
 retrieval_topk = 5
 retrieval_snippet_max_chars = 120
+hybrid_query_recent_messages_limit = 30      # Hybrid Query 读取场景最近消息条数
+hybrid_query_recent_user_messages_limit = 3  # Hybrid Query 中用户最近消息条数
+recent_dialogue_max_lines = 30               # 注入到主 prompt 的最近对话行数
 
 # OpenAI / LLM 设置
 openai_base_url = "https://api.openai.com/v1"
@@ -66,6 +69,17 @@ memory_overlap_messages = 10
 memory_extract_max_messages = 60
 memory_archive_days = 90
 
+# AI 主动记忆写入速率限制（防止滥用）
+# 说明：
+# - AI 可在对话中主动调用 create_memory 工具写入重要记忆
+# - 与定时批量提取（凌晨 3 点）并行，形成双轨记忆系统
+# - 速率限制分为会话级和每日级，分群聊和私聊
+memory_session_limit_group = 3        # 群聊每会话限额（条）
+memory_session_limit_private = 5      # 私聊每会话限额（条）
+memory_daily_limit_group = 25         # 群聊每日限额（条/天）
+memory_daily_limit_private = 40       # 私聊每日限额（条/天）
+memory_session_idle_timeout = 600.0   # 会话空闲超时（秒，10分钟）
+
 # 表情包设置
 sticker_promote_threshold = 3
 sticker_cooldown_seconds = 60
@@ -103,3 +117,67 @@ flow_mode_private_check_probability = 1.0  # 心流模式下私聊消息被检�
 # 摘要设置
 summary_window_message_count = 20
 summary_window_seconds = 900
+
+# ==================== MCP（Model Context Protocol）工具集成 ====================
+# 说明：
+# - MCP 用于将外部工具（搜索/文件/数据库等）以统一协议接入 LLM
+# - 启用后，LLM 可通过 OpenAI function calling 机制调用配置的工具
+# - 向后兼容：enable_mcp=false 时完全不影响现有功能
+# - 依赖安装：`uv pip install .[mcp]` 或 `pip install .[mcp]`
+
+enable_mcp = false  # 是否启用 MCP（默认关闭）
+
+# MCP 运行策略
+mcp_lazy_connect = true  # 懒加载：启动时不连接 server，首次使用时才连接（推荐）
+mcp_fail_open = true     # 失败降级：MCP 失败不影响主流程，继续走无工具路径（推荐）
+
+# MCP 工具调用限制
+mcp_tool_timeout = 15.0           # 单次工具调用超时（秒），避免工具卡死
+mcp_max_tool_calls = 6            # 单次规划最大工具调用次数（防止无限循环）
+mcp_tool_result_max_chars = 2000  # 工具返回结果最大字符数（截断以控制 token 成本）
+
+# MCP 并发策略
+mcp_parallel_tools = false     # 同一轮多个工具调用是否并发执行（默认串行更安全）
+mcp_max_parallel_tools = 4     # 并发执行的最大并行度（仅在 parallel_tools=true 时生效）
+
+# MCP Server 配置列表（支持多个 server 并存）
+# 格式：[[yuying_chameleon.mcp_servers]] 开启一个新 server 配置块
+
+# 示例 1: 文件系统工具（本地 Python 模块）
+# [[yuying_chameleon.mcp_servers]]
+# id = "filesystem"                  # 必填：server 唯一标识（不同 server 的 id 不能重复）
+# enabled = true                     # 可选：是否启用此 server（默认 true）
+# display_name = "文件系统"           # 可选：显示名称，会写入工具 description 的 [Name] 前缀
+# transport = "stdio"                # 传输方式：首期只支持 stdio（通过子进程 stdin/stdout 通信）
+# command = "python"                 # 必填：启动 MCP server 的命令
+# args = ["-m", "mcp_server_filesystem"]  # 可选：命令参数
+# cwd = "/path/to/workspace"         # 可选：工作目录
+# env = { "LOG_LEVEL" = "INFO" }     # 可选：环境变量（会继承系统环境并 merge）
+
+# 工具过滤（可选，用于控制 token 成本）
+# allow_tools = ["read_file", "list_directory"]  # 白名单：仅允许这些工具（优先级高）
+# deny_tools = ["delete_file"]                   # 黑名单：禁止这些工具
+
+# 示例 2: Web 搜索工具（Node.js MCP server）
+# [[yuying_chameleon.mcp_servers]]
+# id = "brave-search"
+# display_name = "Brave搜索"
+# transport = "stdio"
+# command = "node"
+# args = ["/path/to/brave-search-mcp/index.js"]
+# env = { "BRAVE_API_KEY" = "your-api-key-here" }
+
+# 示例 3: 数据库查询工具
+# [[yuying_chameleon.mcp_servers]]
+# id = "postgres"
+# display_name = "数据库"
+# transport = "stdio"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-postgres", "postgresql://user:pass@localhost/dbname"]
+# allow_tools = ["query", "list_tables"]  # 只允许查询和列表，禁止写入操作
+
+# 注意事项：
+# 1. 工具名冲突：多个 server 提供同名工具时，会自动加 `__{server_id}` 后缀
+# 2. Schema 转换：MCP inputSchema 会自动转换为 OpenAI parameters，复杂 schema 可能被降级
+# 3. 安全性：工具有完整的系统访问权限，请只配置可信的 MCP server
+# 4. 调试：启用 MCP 后可查看日志中的 "MCP tools 已加载: X 个" 确认工具注册成功

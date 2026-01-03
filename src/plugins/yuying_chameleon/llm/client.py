@@ -43,12 +43,36 @@ from __future__ import annotations
 
 import asyncio  # Python异步编程标准库
 import os  # 操作系统接口,用于读取环境变量
-from typing import Any, Dict, List, Optional  # 类型提示
+from dataclasses import dataclass
+from typing import Any, Dict, List, Literal, Optional, Union, overload  # 类型提示
 
 import openai  # OpenAI官方Python SDK
 from nonebot import logger  # NoneBot日志记录器
 
 from ..config import plugin_config  # 导入插件配置
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    """OpenAI tool call 的最小结构（用于 planner 工具循环）。
+
+    注意：
+    - OpenAI SDK 在不同版本/不同 provider 下，返回对象形态可能略有差异；
+      这里做"最小依赖"的抽取，只保留 tool_call_id/name/arguments_json。
+    """
+
+    tool_call_id: str
+    name: str
+    arguments_json: str
+
+
+@dataclass(frozen=True)
+class ChatCompletionResult:
+    """一次 chat completion 的结构化结果（支持 tools/function calling）。"""
+
+    content: Optional[str]
+    tool_calls: List[ToolCall]
+    raw: Any  # 原始 SDK 响应对象，留给需要更深度调试/兼容处理的场景
 
 
 class LLMClient:
@@ -196,9 +220,37 @@ class LLMClient:
         # 保存模型名称,供后续调用时使用
         self.model = model
 
+    @overload
     async def chat_completion(
-        self, messages: List[Dict[str, Any]], temperature: float = 0.7
-    ) -> Optional[str]:
+        self,
+        messages: List[Dict[str, Any]],
+        temperature: float = 0.7,
+        *,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
+        return_result: Literal[False] = False,
+    ) -> Optional[str]: ...
+
+    @overload
+    async def chat_completion(
+        self,
+        messages: List[Dict[str, Any]],
+        temperature: float = 0.7,
+        *,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
+        return_result: Literal[True],
+    ) -> Optional[ChatCompletionResult]: ...
+
+    async def chat_completion(
+        self,
+        messages: List[Dict[str, Any]],
+        temperature: float = 0.7,
+        *,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
+        return_result: bool = False,
+    ) -> Union[Optional[str], Optional[ChatCompletionResult]]:
         """执行一次Chat Completions请求(对话生成)
 
         这个方法的作用:
@@ -206,6 +258,12 @@ class LLMClient:
         - 使用异步调用,不阻塞事件循环
         - 捕获所有异常,失败时返回None(降级策略)
         - 只返回生成的文本内容,不返回完整响应对象
+
+        MCP/工具调用支持（向后兼容）：
+        - 当 return_result=False（默认）时：仅返回文本 content（Optional[str]）
+        - 当 return_result=True 时：返回 ChatCompletionResult，包含 content + tool_calls
+          （tool_calls 可能为空列表，用于工具调用循环）
+        - tools 参数控制是否启用工具调用，但不影响返回类型（仅由 return_result 决定）
 
         OpenAI Chat Completions API说明:
         - API名称: POST /v1/chat/completions
@@ -234,9 +292,22 @@ class LLMClient:
                 - 0.7: 平衡的随机性,适合对话
                 - 1.0-2.0: 高创造性,输出更随机多样
 
+            tools: OpenAI tools 列表(可选)
+                - 用于 function calling
+                - None: 不使用工具(默认)
+
+            tool_choice: 工具选择策略(可选)
+                - "auto": 自动决定是否调用工具
+                - "none": 不调用工具
+                - {"type": "function", "function": {"name": "xxx"}}: 强制调用指定工具
+
+            return_result: 是否返回结构化结果(可选)
+                - False(默认): 只返回 content 文本
+                - True: 返回 ChatCompletionResult 对象
+
         Returns:
-            Optional[str]:
-                - 成功: 返回模型生成的文本内容(字符串)
+            Union[Optional[str], Optional[ChatCompletionResult]]:
+                - 成功: 返回模型生成的文本内容(字符串) 或 ChatCompletionResult
                 - 失败: 返回None(用于上层降级处理)
 
         Raises:
@@ -256,26 +327,92 @@ class LLMClient:
             ... ]
             >>> reply = await client.chat_completion(messages)
             >>> print(reply)  # "你好!我是一个AI助手,很高兴为你服务..."
+
+            >>> # tools/function calling：需要结构化结果
+            >>> result = await client.chat_completion(
+            ...     messages,
+            ...     tools=[{"type": "function", "function": {"name": "search", "parameters": {"type": "object"}}}],
+            ...     return_result=True,
+            ... )
+            >>> print(result.tool_calls)
         """
 
         try:
-            # await self.client.chat.completions.create(): 调用OpenAI API
-            # - self.client: AsyncOpenAI客户端实例
-            # - .chat.completions: Chat Completions API接口
-            # - .create(): 创建一次completion请求
-            # - await: 等待异步调用完成
-            response = await self.client.chat.completions.create(
-                model=self.model,  # 使用初始化时指定的模型
-                messages=messages,  # 传入消息列表
-                temperature=temperature  # 传入温度参数
-            )
+            # 构建请求参数
+            req: Dict[str, Any] = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": temperature,
+            }
 
-            # 从响应中提取生成的文本内容
-            # response.choices: API返回的候选回复列表(通常只有1个)
-            # [0]: 取第一个候选
-            # .message: 消息对象
-            # .content: 消息的文本内容
-            return response.choices[0].message.content
+            # tools/function calling（可选）：
+            # - tools 为空时，保持旧行为，不改变输出
+            # - tools 非空时，默认 tool_choice="auto" 让模型自行决定是否调用工具
+            if isinstance(tools, list) and tools:
+                req["tools"] = tools
+                req["tool_choice"] = tool_choice if tool_choice is not None else "auto"
+
+            response = await self.client.chat.completions.create(**req)
+
+            # OpenAI ChatCompletion：取第一个 choice 的 message
+            msg = response.choices[0].message
+
+            # content: 可能为 None（当模型只返回 tool_calls 时）
+            content = getattr(msg, "content", None)
+
+            if not return_result:
+                # 向后兼容：只返回文本 content
+                return content
+
+            # return_result=True：尽力抽取 tool_calls（兼容对象/字典两种形态）
+            extracted: List[ToolCall] = []
+            raw_tool_calls = getattr(msg, "tool_calls", None) or []
+            for idx, tc in enumerate(list(raw_tool_calls)):
+                # tool_call_id
+                tc_id = ""
+                try:
+                    tc_id = str(getattr(tc, "id", "") or "")
+                except Exception:
+                    tc_id = ""
+
+                # function.name / function.arguments
+                fn = None
+                try:
+                    fn = getattr(tc, "function", None)
+                except Exception:
+                    fn = None
+
+                name = ""
+                args_json = ""
+                try:
+                    name = str(getattr(fn, "name", "") or "")
+                except Exception:
+                    name = ""
+                try:
+                    args_json = str(getattr(fn, "arguments", "") or "")
+                except Exception:
+                    args_json = ""
+
+                # 少数 provider 可能返回 dict；做一层兜底
+                if not name and isinstance(tc, dict):
+                    fn2 = tc.get("function")
+                    if isinstance(fn2, dict):
+                        name = str(fn2.get("name") or "")
+                        args_json = str(fn2.get("arguments") or "")
+                    tc_id = str(tc.get("id") or tc_id)
+
+                # 严格要求 name 存在，否则无法路由
+                if not name:
+                    continue
+
+                # tool_call_id 必须存在才能回传 tool message；没有就生成一个稳定占位
+                # 确保单次响应内唯一：加上索引避免同名工具冲突
+                if not tc_id:
+                    tc_id = f"toolcall_{name}_{idx}"
+
+                extracted.append(ToolCall(tool_call_id=tc_id, name=name, arguments_json=args_json))
+
+            return ChatCompletionResult(content=content, tool_calls=extracted, raw=response)
 
         except asyncio.CancelledError:
             # asyncio.CancelledError: 异步任务被取消
@@ -287,17 +424,9 @@ class LLMClient:
         except Exception as e:
             # 捕获所有其他异常(网络错误、API错误、超时等)
             # logger.error(): 记录错误日志,f-string格式化
-            # 常见错误:
-            # - 网络连接失败
-            # - API认证失败(401)
-            # - 模型不存在(404)
-            # - 请求超时
-            # - 配额用尽(429)
             logger.error(f"LLM 调用失败:{e}")
 
             # 返回None表示调用失败
-            # 上层代码应检查返回值是否为None,并实施降级策略
-            # 例如: 使用默认回复、跳过本次回复等
             return None
 
 

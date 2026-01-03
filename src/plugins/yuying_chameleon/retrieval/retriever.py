@@ -362,9 +362,14 @@ class Retriever:
             # 参数:
             # - scene_type: 场景类型
             # - scene_id: 场景标识
-            # - limit=30: 查询最近30条消息
+            # - limit: 查询最近N条消息(可配置)
             # 返回: RawMessage对象列表,按时间倒序(最新在前)
-            recent = await RawRepository.get_recent_by_scene(scene_type, scene_id, limit=30)
+            limit = int(getattr(plugin_config, "yuying_hybrid_query_recent_messages_limit", 30) or 30)
+            if limit < 5:
+                limit = 5
+            if limit > 200:
+                limit = 200
+            recent = await RawRepository.get_recent_by_scene(scene_type, scene_id, limit=limit)
 
             # ==================== 步骤5: 遍历最近消息,提取有用上下文 ====================
 
@@ -386,8 +391,11 @@ class Retriever:
                     # 条件:
                     # - m.content: 有内容
                     # - m.content != current_msg: 不是当前消息(避免重复)
-                    # - len(recent_user_texts) < 3: 最多3条
-                    if m.content and m.content != current_msg and len(recent_user_texts) < 3:
+                    # - len(recent_user_texts) < N: 最多N条(可配置)
+                    user_limit = int(getattr(plugin_config, "yuying_hybrid_query_recent_user_messages_limit", 3) or 3)
+                    if user_limit < 0:
+                        user_limit = 0
+                    if m.content and m.content != current_msg and len(recent_user_texts) < user_limit:
                         recent_user_texts.append(m.content)  # 添加到列表
                     continue  # 继续处理下一条消息
 
@@ -407,11 +415,14 @@ class Retriever:
 
         if recent_user_texts:  # 如果有用户最近消息
             # 增强图片占位符
-            # [await Retriever._enrich_images(t) for t in recent_user_texts[:3]]:
+            # [await Retriever._enrich_images(t) for t in recent_user_texts[:N]]:
             # - 列表推导式
             # - 对每条消息调用_enrich_images
-            # - [:3]: 最多取前3条
-            enriched = [await Retriever._enrich_images(t) for t in recent_user_texts[:3]]
+            # - [:N]: 最多取前N条
+            user_limit = int(getattr(plugin_config, "yuying_hybrid_query_recent_user_messages_limit", 3) or 3)
+            if user_limit < 0:
+                user_limit = 0
+            enriched = [await Retriever._enrich_images(t) for t in recent_user_texts[:user_limit]]
 
             # " / ".join(enriched): 用" / "连接多条消息
             # 例如: "消息1 / 消息2 / 消息3"

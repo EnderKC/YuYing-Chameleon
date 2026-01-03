@@ -378,40 +378,6 @@ class Gatekeeper:
         return base
 
     @staticmethod
-    def _looks_like_question(text: str) -> bool:
-        """短路规则: 检测消息是否明显是提问
-
-        检测规则:
-        - 包含问号(中英文): ? ？
-        - 包含常见疑问词开头: 什么/怎么/为什么/如何/能不能/可以/哪里等
-
-        Args:
-            text: 消息文本
-
-        Returns:
-            bool: True表示明显是提问
-        """
-        t = (text or "").strip()
-        if not t:
-            return False
-
-        # 包含问号
-        if "?" in t or "？" in t:
-            return True
-
-        # 常见疑问词开头
-        question_words = [
-            "什么", "怎么", "为什么", "如何", "能不能", "可以", "可不可以",
-            "哪里", "哪个", "哪些", "谁", "几", "多少", "是不是", "对不对",
-            "行不行", "好不好", "会不会", "有没有", "要不要"
-        ]
-        for word in question_words:
-            if t.startswith(word):
-                return True
-
-        return False
-
-    @staticmethod
     def _is_emoji_only(text: str) -> bool:
         """短路规则: 检测消息是否仅包含表情符号
 
@@ -569,10 +535,6 @@ class Gatekeeper:
         # 3.2 过短且不是提问 → 不回
         if Gatekeeper._is_too_short_no_question_mark(_msg_content):
             return False
-
-        # 3.3 明显提问 → 回
-        if Gatekeeper._looks_like_question(_msg_content):
-            return True
 
         # 步骤4: 概率抽样(决定是否调用nano)
         check_prob = float(

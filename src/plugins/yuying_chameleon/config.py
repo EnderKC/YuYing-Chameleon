@@ -40,11 +40,59 @@ database_url = plugin_config.yuying_database_url
 
 import os  # 用于读取环境变量
 from pathlib import Path  # 用于处理文件路径
-from typing import Dict, List, Optional  # 类型提示
+from typing import Any, Dict, List, Optional  # 类型提示
 
 from nonebot import get_driver  # 获取NoneBot驱动器,用于读取全局配置
 from nonebot import logger  # NoneBot的日志记录器
-from pydantic.v1 import BaseModel, Extra, Field  # Pydantic v1的数据模型相关类
+from pydantic.v1 import BaseModel, Extra, Field, root_validator  # Pydantic v1的数据模型相关类
+
+
+class MCPServerConfig(BaseModel):
+    """MCP Server 配置项（单个 server）。
+
+    设计目标（首期实现原型）：
+    - 支持配置多个 MCP server（并行存在，按 id 区分）。
+    - 支持 stdio transport（最常见，便于本地/容器部署）。
+    - 兼容扩展（未来可加 http/sse 等 transport，不破坏现有配置）。
+
+    TOML 示例：
+      enable_mcp = true
+      [[yuying_chameleon.mcp_servers]]
+      id = "web"
+      transport = "stdio"
+      command = "python"
+      args = ["-m", "my_mcp_server"]
+
+      [[yuying_chameleon.mcp_servers]]
+      id = "fs"
+      transport = "stdio"
+      command = "node"
+      args = ["server.js"]
+      env = { "TZ" = "UTC" }
+    """
+
+    id: str = Field(default="", alias="id")
+    enabled: bool = Field(default=True, alias="enabled")
+
+    # transport：首期建议使用 stdio（由 MCP client SDK 负责协议细节）。
+    transport: str = Field(default="stdio", alias="transport")
+
+    # stdio 参数：command/args/cwd/env
+    command: str = Field(default="", alias="command")
+    args: List[str] = Field(default_factory=list, alias="args")
+    cwd: Optional[str] = Field(default=None, alias="cwd")
+    env: Dict[str, str] = Field(default_factory=dict, alias="env")
+
+    # 过滤工具（token 成本控制的"简单版本"）：allow 优先生效，其次 deny。
+    allow_tools: List[str] = Field(default_factory=list, alias="allow_tools")
+    deny_tools: List[str] = Field(default_factory=list, alias="deny_tools")
+
+    # 用于提升 LLM 可读性：显示名会写进工具 description 的 [ServerName] 前缀里
+    display_name: str = Field(default="", alias="display_name")
+
+    class Config:
+        extra = Extra.ignore
+        allow_population_by_field_name = True
 
 
 class Config(BaseModel):
@@ -192,6 +240,33 @@ class Config(BaseModel):
     # - 默认值: 120
     # - 说明: 超过此长度的文本会被截断并加上省略号
     # - 目的: 控制输入LLM的上下文长度,节省tokens
+
+    yuying_hybrid_query_recent_messages_limit: int = Field(
+        default=30,
+        alias="hybrid_query_recent_messages_limit",
+    )
+    # Hybrid Query 组装时读取的“场景最近消息”数量
+    # - 作用: 用于提取【最近用户/最近机器人/最近对方】等上下文
+    # - 单位: 条(消息数)
+    # - 默认值: 30
+
+    yuying_hybrid_query_recent_user_messages_limit: int = Field(
+        default=3,
+        alias="hybrid_query_recent_user_messages_limit",
+    )
+    # Hybrid Query 中“用户自己最近消息”的条数上限
+    # - 作用: 理解用户连续提问/话题延续
+    # - 单位: 条
+    # - 默认值: 3
+
+    yuying_recent_dialogue_max_lines: int = Field(
+        default=30,
+        alias="recent_dialogue_max_lines",
+    )
+    # 注入到主对话 prompt 的“最近对话”行数上限
+    # - 作用: 给 ActionPlanner 提供短期上下文(按时间顺序)
+    # - 单位: 行(消息行)
+    # - 默认值: 30
 
     yuying_vector_size: int = Field(default=2048, alias="vector_size")
     # 向量维度大小
@@ -413,6 +488,43 @@ class Config(BaseModel):
     # - 默认值: 90 (3个月)
     # - 说明: 归档的记忆不会被删除,但不参与检索
 
+    # ==================== AI 主动记忆写入速率限制配置 ====================
+
+    yuying_memory_session_limit_group: int = Field(default=3, alias="memory_session_limit_group")
+    # 群聊每会话记忆写入限额
+    # - 作用: AI 在一个群聊会话中最多主动写入多少条记忆
+    # - 单位: 条
+    # - 默认值: 3
+    # - 说明: 会话定义为连续对话，空闲超时后重置
+
+    yuying_memory_session_limit_private: int = Field(default=5, alias="memory_session_limit_private")
+    # 私聊每会话记忆写入限额
+    # - 作用: AI 在一个私聊会话中最多主动写入多少条记忆
+    # - 单位: 条
+    # - 默认值: 5
+    # - 说明: 私聊通常更深入，允许写入更多记忆
+
+    yuying_memory_daily_limit_group: int = Field(default=25, alias="memory_daily_limit_group")
+    # 群聊每日记忆写入限额
+    # - 作用: AI 每天最多为单个用户在群聊中写入多少条记忆
+    # - 单位: 条/天
+    # - 默认值: 25
+    # - 说明: 防止单个用户占用过多记忆存储
+
+    yuying_memory_daily_limit_private: int = Field(default=40, alias="memory_daily_limit_private")
+    # 私聊每日记忆写入限额
+    # - 作用: AI 每天最多为单个用户在私聊中写入多少条记忆
+    # - 单位: 条/天
+    # - 默认值: 40
+    # - 说明: 私聊限额更高，鼓励深度对话
+
+    yuying_memory_session_idle_timeout: float = Field(default=600.0, alias="memory_session_idle_timeout")
+    # 记忆写入会话空闲超时
+    # - 作用: 多少秒无消息后视为会话结束，重置会话计数
+    # - 单位: 秒
+    # - 默认值: 600.0 (10 分钟)
+    # - 说明: 超时后开启新会话，可再次写入记忆
+
     # ==================== 表情包配置 ====================
 
     yuying_sticker_promote_threshold: int = Field(default=3, alias="sticker_promote_threshold")
@@ -576,6 +688,88 @@ class Config(BaseModel):
     # - 单位: 秒
     # - 默认值: 900 (15分钟)
     # - 说明: 超过15分钟的间隔会开启新窗口
+
+    # ==================== MCP（Model Context Protocol）配置 ====================
+    #
+    # 说明：
+    # - MCP 用于把外部工具（搜索/文件/业务系统等）以统一协议提供给 LLM。
+    # - 本插件通过 OpenAI "tools/function calling" 机制对接 MCP tools。
+    # - 向后兼容：enable_mcp=false 时，完全不走 MCP 代码路径（零影响）。
+    #
+    # 首期策略（避免过度设计）：
+    # - tools 注入：仅注入 enabled=true 的 server 的工具
+    # - 工具过滤：支持 allow_tools/deny_tools
+    # - schema：尽力转换 + 安全降级（详见 llm/schema_converter.py）
+    # - 工具循环：由 planner/action_planner.py 负责
+
+    yuying_enable_mcp: bool = Field(default=False, alias="enable_mcp")
+    # 是否启用 MCP
+    # - 默认: False（关闭，保持现有行为）
+    # - True: 规划阶段允许 LLM 调用 MCP tools
+
+    yuying_mcp_servers: List[MCPServerConfig] = Field(default_factory=list, alias="mcp_servers")
+    # MCP server 列表（支持多个）
+    # - 每个元素是 MCPServerConfig
+    # - 通过 id 唯一标识
+
+    yuying_mcp_lazy_connect: bool = Field(default=True, alias="mcp_lazy_connect")
+    # 是否懒加载连接
+    # - True（默认）：启动时不连接 server；第一次需要 tools 时才连接/拉取工具
+    # - False：启动时尽力连接并预热工具列表（失败可降级，见 mcp_fail_open）
+
+    yuying_mcp_fail_open: bool = Field(default=True, alias="mcp_fail_open")
+    # MCP 失败时是否"放行"（降级继续不用工具）
+    # - True（默认）：连接失败/列工具失败/执行失败 -> 记录日志 -> 继续走无工具路径
+    # - False：把异常上抛（不推荐，可能影响主流程稳定性）
+
+    yuying_mcp_tool_timeout: float = Field(default=15.0, alias="mcp_tool_timeout")
+    # 单次工具调用超时（秒）
+    # - 作用：避免外部工具卡死拖垮主流程
+    # - 注意：并不会改变 MCP server 自身内部超时逻辑，仅在客户端侧限制等待
+
+    yuying_mcp_max_tool_calls: int = Field(default=6, alias="mcp_max_tool_calls")
+    # 单次规划允许的最大 tool call 次数（防止无限循环）
+    # - 说明：每轮 LLM 回复可能包含多个 tool_calls；这里限制的是"累计 tool_calls 数"
+
+    yuying_mcp_parallel_tools: bool = Field(default=False, alias="mcp_parallel_tools")
+    # 同一轮多个 tool_calls 是否并发执行
+    # - 默认 False：串行更安全（避免工具之间隐式依赖导致竞态）
+    # - True：并发可降低延迟，但需要工具本身支持并发/无依赖
+
+    yuying_mcp_max_parallel_tools: int = Field(default=4, alias="mcp_max_parallel_tools")
+    # 并发执行的最大并行度（仅在 mcp_parallel_tools=true 时生效）
+
+    yuying_mcp_tool_result_max_chars: int = Field(default=2000, alias="mcp_tool_result_max_chars")
+    # 工具返回结果的最大字符数
+    # - 作用：防止工具返回超长内容（如搜索结果）消耗过多 tokens
+    # - 单位：字符数
+    # - 默认值：2000
+    # - 超过限制会截断并标记 truncated=true
+
+    @root_validator(pre=True)
+    def _mcp_key_compat(cls, values: Any) -> Any:
+        """兼容早期/简写 MCP 配置键，避免被 Extra.ignore 吞掉。
+
+        允许用户在 [yuying_chameleon] 段使用：
+        - lazy_connect / fail_open / tool_timeout / max_tool_calls / parallel_tools / ...
+        同时保持当前 mcp_* 前缀键可用（优先级更高）。
+        """
+        if not isinstance(values, dict):
+            return values
+
+        mapping = {
+            "lazy_connect": "mcp_lazy_connect",
+            "fail_open": "mcp_fail_open",
+            "tool_timeout": "mcp_tool_timeout",
+            "max_tool_calls": "mcp_max_tool_calls",
+            "parallel_tools": "mcp_parallel_tools",
+            "max_parallel_tools": "mcp_max_parallel_tools",
+            "tool_result_max_chars": "mcp_tool_result_max_chars",
+        }
+        for src, dst in mapping.items():
+            if src in values and dst not in values:
+                values[dst] = values.get(src)
+        return values
 
     class Config:
         """Pydantic v1内部配置类

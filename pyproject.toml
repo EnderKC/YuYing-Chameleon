@@ -3,7 +3,7 @@ name = "YuYing-Chameleon"
 version = "0.1.0"
 description = "YuYing-Chameleon"
 readme = "README.md"
-requires-python = ">=3.11, <4.0"
+requires-python = ">=3.12, <4.0"
 dependencies = [
     "nonebot2[aiohttp,fastapi]>=2.4.4",
     "nonebot-adapter-onebot>=2.4.6",
@@ -21,6 +21,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pyright[nodejs]", "ruff"]
+
+# MCP（Model Context Protocol）：
+# - 作为可选依赖，确保 enable_mcp=false 时无需安装也不影响现有功能
+# - 启用 MCP 时建议安装：`uv pip install .[mcp]` 或 `pip install .[mcp]`
+# - 版本锁定 <2.0.0 避免破坏性更新
+mcp = ["mcp>=1.0.0,<2.0.0"]
 
 [tool.nonebot]
 plugin_dirs = ["src/plugins"]
