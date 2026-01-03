@@ -345,14 +345,14 @@ class ActionPlanner:
         # 3. 合并后一起传给 LLM
         # 4. 执行时根据工具名前缀路由
 
-        tools: Optional[List[Dict[str, Any]]] = []
+        tools_list: List[Dict[str, Any]] = []
         content: Optional[str] = None
 
         # 1) 获取内部工具（总是可用）
         if internal_tools_manager.enabled:
             try:
                 internal_tools = internal_tools_manager.get_openai_tools()
-                tools.extend(internal_tools)
+                tools_list.extend(internal_tools)
                 logger.debug(f"已加载 {len(internal_tools)} 个内部工具")
             except Exception as exc:
                 logger.warning(f"加载内部工具失败，将继续（不影响主流程）：{exc}")
@@ -363,7 +363,7 @@ class ActionPlanner:
             # MCP 启用：尽力拉取工具列表
             try:
                 mcp_tools = await mcp_manager.get_openai_tools()
-                tools.extend(mcp_tools)
+                tools_list.extend(mcp_tools)
                 logger.debug(f"已加载 {len(mcp_tools)} 个 MCP 工具")
             except Exception as exc:
                 if getattr(plugin_config, "yuying_mcp_fail_open", True):
@@ -372,8 +372,7 @@ class ActionPlanner:
                     raise
 
         # 3) 如果没有工具，设为 None（传统路径）
-        if not tools:
-            tools = None
+        tools: Optional[List[Dict[str, Any]]] = tools_list or None
 
         if tools:
             # 工具可用：调用 LLM 并启用 tools

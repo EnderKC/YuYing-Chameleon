@@ -44,11 +44,12 @@ from .workers.index_worker import index_worker
 from .workers.media_worker import media_worker
 from .workers.sticker_worker import sticker_worker
 from .adapters.lagrange_parser import LagrangeParser
-from .normalize.normalizer import Normalizer
+from .normalize.normalizer import Normalizer, NormalizedMessage
 from .llm.vision import VisionHelper
 from .paths import assets_dir
 from .storage.write_jobs import AddIndexJobJob
 from .storage.write_jobs import AsyncCallableJob
+from .tools.adaptive_debouncer import AdaptiveDebouncer
 
 __plugin_meta__ = PluginMetadata(
     name="YuYing-Chameleon",
@@ -364,7 +365,7 @@ async def _download_and_steal(
 
         def _download() -> None:
             """下载图片到临时路径。"""
-            urllib.request.urlretrieve(url, dst)  # nosec - 运行时受配置控制
+            urllib.request.urlretrieve(url, str(dst))  # nosec - 运行时受配置控制
 
         await asyncio.to_thread(_download)
         await StickerStealer.process_image(
@@ -462,19 +463,82 @@ async def shutdown() -> None:
     # 关闭 MCP 管理器（关闭所有 MCP server 连接）
     await mcp_manager.on_shutdown()
 
+    # 清理自适应防抖任务
+    global _adaptive_debouncer
+    if _adaptive_debouncer is not None:
+        await _adaptive_debouncer.shutdown()
+
+
+_adaptive_debouncer: Optional[AdaptiveDebouncer] = None
+
+
+def get_adaptive_debouncer() -> AdaptiveDebouncer:
+    """获取或创建全局 AdaptiveDebouncer 实例（懒加载）。
+
+    Returns:
+        AdaptiveDebouncer: 全局 debouncer 实例
+    """
+    global _adaptive_debouncer
+    if _adaptive_debouncer is None:
+        _adaptive_debouncer = AdaptiveDebouncer(
+            joiner=str(
+                getattr(plugin_config, "yuying_adaptive_debounce_joiner", "auto")
+                or "auto"
+            ),
+            ttl_seconds=float(
+                getattr(plugin_config, "yuying_adaptive_debounce_ttl_seconds", 60.0)
+                or 60.0
+            ),
+            max_hold_seconds=float(
+                getattr(
+                    plugin_config, "yuying_adaptive_debounce_max_hold_seconds", 15.0
+                )
+                or 15.0
+            ),
+            max_parts=int(
+                getattr(plugin_config, "yuying_adaptive_debounce_max_parts", 12) or 12
+            ),
+            max_plain_len=int(
+                getattr(plugin_config, "yuying_adaptive_debounce_max_plain_len", 300)
+                or 300
+            ),
+            w1=float(
+                getattr(plugin_config, "yuying_adaptive_debounce_w1", 0.6) or 0.6
+            ),
+            w2=float(
+                getattr(plugin_config, "yuying_adaptive_debounce_w2", -0.025) or -0.025
+            ),
+            w3=float(
+                getattr(plugin_config, "yuying_adaptive_debounce_w3", -2.5) or -2.5
+            ),
+            bias=float(
+                getattr(plugin_config, "yuying_adaptive_debounce_bias", 1.5) or 1.5
+            ),
+            min_wait=float(
+                getattr(plugin_config, "yuying_adaptive_debounce_min_wait", 0.5) or 0.5
+            ),
+            max_wait=float(
+                getattr(plugin_config, "yuying_adaptive_debounce_max_wait", 5.0) or 5.0
+            ),
+        )
+    return _adaptive_debouncer
+
 
 matcher = on_message(priority=10, block=False)
 
 
-@matcher.handle()
-async def handle_message(bot: Bot, event: Event) -> None:
-    """处理单条入站消息。"""
+async def _process_normalized(bot: Bot, normalized: NormalizedMessage) -> None:
+    """处理单条（可能已合并的）归一化消息。
 
-    inbound = LagrangeParser.parse_event(event)
-    if not inbound:
-        return
+    说明：
+        - 此函数包含从"写入 raw_messages"开始到最后的所有处理逻辑
+        - 会在防抖合并后或直接调用（防抖未启用时）
+        - 原本在 handle_message 中的主链路逻辑已迁移到此处
 
-    normalized = await Normalizer.normalize(inbound)
+    Args:
+        bot: NoneBot Bot 实例
+        normalized: 归一化后的消息（可能已经是多段合并的结果）
+    """
 
     # 1) 写入 raw_messages（高优先级直写）
     raw_msg = RawMessage(
@@ -767,3 +831,45 @@ async def handle_message(bot: Bot, event: Event) -> None:
         scene_id=normalized.scene_id,
         actions=actions,
     )
+
+
+@matcher.handle()
+async def handle_message(bot: Bot, event: Event) -> None:
+    """处理单条入站消息。
+
+    说明：
+        - 如果启用自适应防抖，消息会被缓冲并拼接
+        - 否则，消息会直接进入处理流程
+    """
+
+    inbound = LagrangeParser.parse_event(event)
+    if not inbound:
+        return
+
+    normalized = await Normalizer.normalize(inbound)
+
+    # 检查是否启用自适应防抖
+    if bool(getattr(plugin_config, "yuying_adaptive_debounce_enabled", False)):
+        mode = str(
+            getattr(plugin_config, "yuying_adaptive_debounce_mode", "full") or "full"
+        )
+        if mode != "full":
+            # 当前仅支持 full 模式，其他模式降级为不使用防抖
+            await _process_normalized(bot, normalized)
+            return
+
+        # 构建防抖 key（按场景+用户维度）
+        key = f"{normalized.scene_type}:{normalized.scene_id}:{normalized.qq_id}"
+        debouncer = get_adaptive_debouncer()
+
+        # 提交到防抖缓冲区
+        await debouncer.submit(
+            key=key,
+            part=normalized,
+            flush_cb=lambda merged: _process_normalized(bot, merged),
+        )
+        return
+
+    # 防抖未启用，直接处理
+    await _process_normalized(bot, normalized)
+

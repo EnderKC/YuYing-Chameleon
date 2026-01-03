@@ -6,6 +6,8 @@
 - 因此这里加入自增序号作为稳定的次级排序键。
 """
 
+from __future__ import annotations
+
 import asyncio
 from itertools import count
 from typing import Optional, Protocol
@@ -24,7 +26,7 @@ class DBWriter:
 
     _instance = None
 
-    def __new__(cls):
+    def __new__(cls) -> DBWriter:
         """创建/获取单例实例。"""
 
         if cls._instance is None:
@@ -34,7 +36,7 @@ class DBWriter:
             cls._instance._seq = count()
         return cls._instance
 
-    def __init__(self):
+    def __init__(self) -> None:
         """单例初始化在 `__new__` 中完成。"""
         pass
 

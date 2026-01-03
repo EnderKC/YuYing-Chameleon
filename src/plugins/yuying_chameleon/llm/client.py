@@ -104,12 +104,12 @@ class LLMClient:
 
     def __init__(
         self,
-        base_url: str,
-        api_key: str,
+        base_url: Optional[str],
+        api_key: Optional[str],
         model: str,
         timeout: float,
         default_headers: Optional[Dict[str, str]] = None,
-    ):
+    ) -> None:
         """创建一个LLM客户端实例
 
         初始化流程:

@@ -118,6 +118,24 @@ flow_mode_private_check_probability = 1.0  # 心流模式下私聊消息被检�
 summary_window_message_count = 20
 summary_window_seconds = 900
 
+# 启用自适应防抖
+adaptive_debounce_enabled = true
+
+# 可选：调整参数（以下为默认值，可以不写）
+adaptive_debounce_joiner = "auto"         # 拼接策略
+adaptive_debounce_max_hold_seconds = 15.0 # 硬截止时间
+adaptive_debounce_max_parts = 12          # 最多拼接段数
+adaptive_debounce_max_plain_len = 300     # 最大纯文本长度
+
+# 可选：调整公式参数（谨慎修改）
+adaptive_debounce_w1 = 0.6                # 一次项系数
+adaptive_debounce_w2 = -0.025             # 二次项系数
+adaptive_debounce_w3 = -2.5               # 标点符号系数
+adaptive_debounce_bias = 1.5              # 基础等待时间
+adaptive_debounce_min_wait = 0.5          # 最小等待时间
+adaptive_debounce_max_wait = 5.0          # 最大等待时间
+
+
 # ==================== MCP（Model Context Protocol）工具集成 ====================
 # 说明：
 # - MCP 用于将外部工具（搜索/文件/数据库等）以统一协议接入 LLM

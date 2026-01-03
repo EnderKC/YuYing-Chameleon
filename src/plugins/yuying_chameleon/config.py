@@ -618,6 +618,98 @@ class Config(BaseModel):
     # - 默认值: 40
     # - 目的: 避免单条消息过长,保持简洁
 
+    # ==================== 自适应防抖配置（Adaptive Debounce） ====================
+
+    yuying_adaptive_debounce_enabled: bool = Field(default=False, alias="adaptive_debounce_enabled")
+    # 是否启用自适应防抖
+    # - 作用: 收集用户的碎片消息，等待话轮结束后再统一处理
+    # - 默认值: False (不启用，保持现有行为)
+    # - True: 启用，会根据消息特征动态计算等待时间
+    # - 优点: 减少碎片消息触发回复，提升语义完整性
+    # - 缺点: 增加回复延迟
+
+    yuying_adaptive_debounce_mode: str = Field(default="full", alias="adaptive_debounce_mode")
+    # 防抖模式
+    # - 作用: 控制防抖的影响范围
+    # - 可选值: "full" (全链路防抖，包括写库、摘要、记忆)
+    # - 默认值: "full"
+    # - 说明: 当前仅支持 full 模式
+
+    yuying_adaptive_debounce_joiner: str = Field(default="auto", alias="adaptive_debounce_joiner")
+    # 拼接策略
+    # - 作用: 控制如何拼接多段消息
+    # - 可选值:
+    #   - "auto": 自动识别中英文，智能拼接（推荐）
+    #   - "": 直接拼接，不加分隔符
+    #   - " ": 以空格拼接
+    # - 默认值: "auto"
+
+    yuying_adaptive_debounce_ttl_seconds: float = Field(default=60.0, alias="adaptive_debounce_ttl_seconds")
+    # 状态 TTL（防御性清理）
+    # - 作用: 防抖状态多久未更新后自动清理
+    # - 单位: 秒
+    # - 默认值: 60.0 (1分钟)
+    # - 目的: 防止异常路径导致的内存泄漏
+
+    yuying_adaptive_debounce_max_hold_seconds: float = Field(default=15.0, alias="adaptive_debounce_max_hold_seconds")
+    # 硬截止时间（防止无限延迟）
+    # - 作用: 从第一段消息开始，最长等待多久后强制 flush
+    # - 单位: 秒
+    # - 默认值: 15.0 (15秒)
+    # - 目的: 避免用户持续分段发送导致永不触发
+
+    yuying_adaptive_debounce_max_parts: int = Field(default=12, alias="adaptive_debounce_max_parts")
+    # 最大拼接段数（硬截止）
+    # - 作用: 最多拼接多少段消息后强制 flush
+    # - 单位: 段
+    # - 默认值: 12
+    # - 目的: 防止极端情况下的无限拼接
+
+    yuying_adaptive_debounce_max_plain_len: int = Field(default=300, alias="adaptive_debounce_max_plain_len")
+    # 最大纯文本长度（硬截止）
+    # - 作用: 纯文本长度（去标记去空白后）超过此值后强制 flush
+    # - 单位: 字符数
+    # - 默认值: 300
+    # - 目的: 避免拼接过长的消息
+
+    yuying_adaptive_debounce_w1: float = Field(default=0.6, alias="adaptive_debounce_w1")
+    # 等待时间公式 - 一次项系数 (w1·L)
+    # - 作用: 控制等待时间随字数增加的速度
+    # - 默认值: 0.6 (正数)
+    # - 说明: 字数少时，等待时间随字数增加
+
+    yuying_adaptive_debounce_w2: float = Field(default=-0.025, alias="adaptive_debounce_w2")
+    # 等待时间公式 - 二次项系数 (w2·L²)
+    # - 作用: 控制抛物线开口向下，字数多时时间衰减
+    # - 默认值: -0.025 (负数)
+    # - 说明: 字数超过阈值后，加速让等待时间衰减
+
+    yuying_adaptive_debounce_w3: float = Field(default=-2.5, alias="adaptive_debounce_w3")
+    # 等待时间公式 - 标点符号系数 (w3·P)
+    # - 作用: 检测到结束符（。？！?!~）时的时间调整
+    # - 默认值: -2.5 (大负数)
+    # - 说明: 检测到结束符时，大幅缩短等待时间
+
+    yuying_adaptive_debounce_bias: float = Field(default=1.5, alias="adaptive_debounce_bias")
+    # 等待时间公式 - 基础等待时间（截距 b）
+    # - 作用: 所有消息的基础等待时间
+    # - 单位: 秒
+    # - 默认值: 1.5
+
+    yuying_adaptive_debounce_min_wait: float = Field(default=0.5, alias="adaptive_debounce_min_wait")
+    # 最小等待时间（下限）
+    # - 作用: 等待时间的最小值
+    # - 单位: 秒
+    # - 默认值: 0.5 (0.5秒)
+    # - 目的: 防止计算出负数或过小的等待时间
+
+    yuying_adaptive_debounce_max_wait: float = Field(default=5.0, alias="adaptive_debounce_max_wait")
+    # 最大等待时间（上限）
+    # - 作用: 等待时间的最大值
+    # - 单位: 秒
+    # - 默认值: 5.0 (5秒)
+    # - 目的: 防止等待时间过长影响用户体验
+
     # ==================== 心流模式配置 ====================
 
     yuying_enable_flow_mode: bool = Field(default=False, alias="enable_flow_mode")

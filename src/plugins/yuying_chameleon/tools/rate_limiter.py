@@ -53,7 +53,7 @@ class SessionRateLimiter:
         daily_limit_group: int = 25,
         daily_limit_private: int = 40,
         session_idle_timeout: float = 600.0,  # 10 分钟
-    ):
+    ) -> None:
         """初始化速率限制器。
 
         Args:

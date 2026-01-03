@@ -44,7 +44,7 @@ nonebot-plugin-sentry = ["nonebot_plugin_sentry"]
 nonebot-plugin-apscheduler = ["nonebot_plugin_apscheduler"]
 [tool.ruff]
 line-length = 88
-target-version = "py39"
+target-version = "py312"
 
 [tool.ruff.format]
 line-ending = "lf"
@@ -130,6 +130,6 @@ keep-runtime-typing = true
 
 [tool.pyright]
 # For Pylance/Pyright configurations, see https://microsoft.github.io/pyright/#/configuration.
-pythonVersion = "3.9"
+pythonVersion = "3.12"
 pythonPlatform = "All"
 typeCheckingMode = "standard"

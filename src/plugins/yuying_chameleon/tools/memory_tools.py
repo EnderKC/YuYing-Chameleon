@@ -21,7 +21,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from nonebot import logger
 
@@ -42,7 +42,7 @@ async def create_memory(
     type: str = "fact",
     confidence: float = 0.9,
     visibility: str = "global",
-    scope_scene_id: str = "",
+    scope_scene_id: Optional[str] = "",
     ttl_days: int = 0,
     # 上下文参数（由工具管理器注入）
     _context_qq_id: str,
@@ -276,7 +276,7 @@ async def create_memory(
 
     # 处理 scope_scene_id
     if visibility == "scene":
-        if not scope_scene_id.strip():
+        if not (scope_scene_id or "").strip():
             scope_scene_id = _context_scene_id
     else:
         scope_scene_id = None  # global/private 记忆不需要 scope_scene_id

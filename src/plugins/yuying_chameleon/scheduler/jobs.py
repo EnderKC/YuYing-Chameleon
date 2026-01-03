@@ -10,7 +10,7 @@ from ..config import plugin_config
 
 _inited = False
 
-def init_scheduler():
+def init_scheduler() -> None:
     """初始化定时任务。"""
 
     global _inited

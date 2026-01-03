@@ -30,7 +30,7 @@ from .memory_tools import create_memory
 class InternalToolsManager:
     """内部工具管理器（单例）。"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         # 工具注册表：{public_name: (function, schema)}
         self._registry: Dict[str, tuple[Callable, Dict[str, Any]]] = {}
 

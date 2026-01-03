@@ -156,7 +156,7 @@ class MediaWorker:
         dst = tmp_dir / f"{media_key}.img"
 
         def _download() -> None:
-            urllib.request.urlretrieve(url, dst)  # nosec - 运行时受配置控制
+            urllib.request.urlretrieve(url, str(dst))  # nosec - 运行时受配置控制
 
         await asyncio.to_thread(_download)
         return str(dst)
