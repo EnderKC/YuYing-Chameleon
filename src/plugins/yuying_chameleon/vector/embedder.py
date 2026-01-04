@@ -42,12 +42,15 @@ await qdrant_client.upsert(collection_name="messages",
 from __future__ import annotations
 
 import asyncio  # Python异步编程标准库
+import io  # 字节流操作
+from pathlib import Path  # 文件路径处理
 from typing import Any, List, Optional, Tuple, cast  # 类型提示
 
 import httpx  # HTTP客户端库,支持异步请求
 from nonebot import logger  # NoneBot日志记录器
 
 from ..config import plugin_config  # 导入插件配置
+from ..llm.vision import VisionHelper  # 导入 data URL 工具
 
 
 def _split_base_url_and_endpoint(raw: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
@@ -202,6 +205,220 @@ def _build_payload(endpoint: str, model: str, text: str) -> List[dict]:
         {"model": model, "input": text},  # 格式1: input为字符串
         {"model": model, "input": [text]},  # 格式2: input为字符串数组
     ]
+
+
+def _build_mm_embedding_payloads(
+    endpoint: str, model: str, *, text: str = "", image_url: str
+) -> List[dict]:
+    """构造多模态 embedding 的请求体候选列表（按兼容性优先级排序）
+
+    这个函数的作用:
+    - 生成多种格式的多模态 embedding 请求体
+    - 针对不同厂商的 API 差异提供多种格式兜底
+    - 支持 text + image 的混合输入
+
+    为什么需要多种格式?
+    - 不同 OpenAI 兼容网关对 multimodal input 的结构要求不同
+    - 火山方舟: input 为 content 数组 [{"type": "text", ...}, {"type": "image_url", ...}]
+    - 其他实现: 可能要求不同的字段顺序或嵌套结构
+    - 通过多候选重试提高成功率
+
+    Args:
+        endpoint: API endpoint 路径
+            - 示例: "/embeddings/multimodal"
+            - 用于判断是否支持多模态
+        model: embedding 模型名称
+            - 示例: "doubao-embedding-vision-250615"
+        text: 文本内容（可选）
+            - 作为辅助信息提升 embedding 质量
+            - 示例: "表情包, tags: 猫咪, intent: 可爱"
+        image_url: 图片的 URL 或 data URL
+            - 必需参数
+            - 示例: "data:image/jpeg;base64,..."
+
+    Returns:
+        List[dict]: 请求体候选列表，按优先级排序
+            - 第一个: 最标准的格式
+            - 后续: 各种变体格式
+            - 依次尝试直到成功
+
+    请求体格式说明:
+        标准格式（OpenAI multimodal API）:
+            {
+                "model": "xxx",
+                "input": [
+                    {"type": "text", "text": "..."},
+                    {"type": "image_url", "image_url": {"url": "data:..."}}
+                ]
+            }
+
+        变体格式:
+            - 交换 text 和 image 的顺序
+            - input 包裹在额外数组中
+            - 只包含 image（text 为空时）
+
+    Example:
+        >>> payloads = _build_mm_embedding_payloads(
+        ...     "/embeddings/multimodal",
+        ...     "doubao-vision",
+        ...     text="表情包",
+        ...     image_url="data:image/jpeg;base64,..."
+        ... )
+        >>> len(payloads) >= 3  # 至少3种格式
+        True
+    """
+
+    # ==================== 步骤1: 检查 endpoint 是否支持多模态 ====================
+
+    endpoint_l = (endpoint or "").lower()
+
+    # 如果 endpoint 不包含 "multimodal"，降级到文本 embedding
+    if "multimodal" not in endpoint_l:
+        # 非多模态 endpoint，只能用文本
+        # 这会让上层自动回退到 text-only embedding
+        logger.warning(
+            f"endpoint '{endpoint}' 不支持多模态，将降级为文本 embedding"
+        )
+        return [{"model": model, "input": text or "表情包"}]
+
+    # ==================== 步骤2: 构造多种 content 结构候选 ====================
+
+    # text 部分: 如果没有文本，使用默认值"表情包"
+    text_content = {"type": "text", "text": text or "表情包"}
+
+    # image 部分: 标准 OpenAI 格式
+    image_content = {"type": "image_url", "image_url": {"url": image_url}}
+
+    # 候选1: text 在前, image 在后（常见顺序）
+    content_text_first = [text_content, image_content]
+
+    # 候选2: image 在前, text 在后（某些实现偏好这个顺序）
+    content_image_first = [image_content, text_content]
+
+    # 候选3: 只有 image（某些实现不接受 text）
+    content_image_only = [image_content]
+
+    # ==================== 步骤3: 构造多种 payload 候选 ====================
+
+    return [
+        # 优先级1: 标准格式（text 在前）
+        {"model": model, "input": content_text_first},
+        # 优先级2: image 在前
+        {"model": model, "input": content_image_first},
+        # 优先级3: input 包裹在额外数组中（某些实现要求 batch 格式）
+        {"model": model, "input": [content_text_first]},
+        # 优先级4: image only（如果 API 不支持 text+image）
+        {"model": model, "input": content_image_only},
+        # 优先级5: image only 的 batch 格式
+        {"model": model, "input": [content_image_only]},
+    ]
+
+
+def _image_path_to_data_url(path: str) -> str:
+    """将本地图片路径转换为 data URL（GIF 取首帧转 JPEG）
+
+    这个函数的作用:
+    - 读取本地图片文件并转为 data URL
+    - 针对 GIF 动图特殊处理: 取首帧转 JPEG
+    - 压缩图片以减小 base64 体积
+
+    为什么 GIF 需要特殊处理?
+    - 大多数 embedding API 不接受 GIF 格式
+    - GIF 包含多帧，体积大，base64 编码后可能超过网关限制
+    - 对于表情包语义理解，首帧通常已足够
+    - JPEG 压缩后体积更小，传输更快
+
+    Args:
+        path: 本地图片文件路径
+            - 类型: 字符串
+            - 示例: "/data/stickers/cat.gif"
+            - 必须是存在的文件
+
+    Returns:
+        str: data URL 格式的字符串
+            - GIF: 取首帧转 JPEG，返回 "data:image/jpeg;base64,..."
+            - 其他: 直接转 data URL，返回 "data:image/{type};base64,..."
+
+    Raises:
+        FileNotFoundError: 如果文件不存在
+        PIL.UnidentifiedImageError: 如果文件不是有效图片
+        其他 I/O 错误
+
+    技术细节:
+        - GIF 处理流程:
+          1. 用 Pillow 打开 GIF
+          2. seek(0) 定位到首帧
+          3. convert("RGB") 转为 RGB 模式（JPEG 不支持透明通道）
+          4. save 为 JPEG，quality=85（平衡质量和体积）
+          5. 转为 data URL
+
+        - 非 GIF 处理:
+          1. 直接读取文件字节流
+          2. 用 VisionHelper 转 data URL
+
+    Example:
+        >>> # GIF 表情包
+        >>> url = _image_path_to_data_url("/stickers/funny.gif")
+        >>> url.startswith("data:image/jpeg;base64,")
+        True
+
+        >>> # PNG 表情包
+        >>> url = _image_path_to_data_url("/stickers/cat.png")
+        >>> url.startswith("data:image/png;base64,")
+        True
+    """
+
+    # ==================== 步骤1: 解析文件路径和后缀 ====================
+
+    p = Path(path)
+    suffix = (p.suffix or "").lower()  # 获取文件后缀，如 ".gif", ".png"
+
+    # ==================== 步骤2: GIF 特殊处理（取首帧转 JPEG） ====================
+
+    if suffix == ".gif":
+        # 使用 Pillow 处理 GIF
+        # 注意: Pillow 已经是项目依赖（stickers/registry.py 中使用）
+        try:
+            from PIL import Image  # 导入 Pillow 库
+        except ImportError:
+            # 如果没有 Pillow，降级为直接读取（可能失败）
+            logger.warning("Pillow 未安装，无法处理 GIF，尝试直接读取")
+            return VisionHelper.to_data_url(p.read_bytes(), suffix)
+
+        # 打开 GIF 文件
+        with Image.open(p) as im:
+            try:
+                # seek(0): 定位到第一帧
+                # GIF 是多帧动画，seek(0) 确保读取首帧
+                im.seek(0)
+            except Exception:
+                # 某些损坏的 GIF 可能 seek 失败，忽略错误
+                pass
+
+            # convert("RGB"): 转换颜色模式
+            # - GIF 可能是 P 模式（调色板）或 RGBA 模式（带透明度）
+            # - JPEG 只支持 RGB 模式
+            # - 转换会丢失透明度，但对语义理解影响不大
+            frame = im.convert("RGB")
+
+            # 创建内存字节流，用于保存 JPEG
+            buf = io.BytesIO()
+
+            # 保存为 JPEG 格式
+            frame.save(
+                buf,
+                format="JPEG",  # 输出格式
+                quality=85,  # 压缩质量 (1-100)，85 是质量和体积的良好平衡
+                optimize=True,  # 启用优化，进一步减小体积
+            )
+
+            # 获取字节流内容并转为 data URL
+            return VisionHelper.to_data_url(buf.getvalue(), ".jpg")
+
+    # ==================== 步骤3: 非 GIF 图片（直接读取） ====================
+
+    # 直接读取文件字节流并转为 data URL
+    return VisionHelper.to_data_url(p.read_bytes(), suffix or ".png")
 
 
 def _coerce_embedding(value: Any) -> Optional[List[float]]:
@@ -710,6 +927,210 @@ class Embedder:
             # 抛出RuntimeError,包含原始异常信息
             # from e: 保留异常链,方便追踪
             raise RuntimeError(f"Embedding 响应解析失败:{e}") from e
+
+    async def get_embedding_multimodal(
+        self,
+        *,
+        text: str = "",
+        image_path: Optional[str] = None,
+        image_url: Optional[str] = None,
+    ) -> List[float]:
+        """将（图片 + 文本）转换为多模态 embedding 向量
+
+        这个方法的作用:
+        - 调用多模态 embedding API 将图片（+文本）向量化
+        - 用于表情包的语义向量化存储
+        - 支持本地文件路径和在线 URL 两种输入方式
+        - 自动处理 GIF（取首帧转 JPEG）
+        - 失败时抛出异常（由上层决定降级策略）
+
+        技术特性:
+        - 复用 get_embedding 的核心逻辑（鉴权、重试、解析）
+        - 自动构造多种 payload 格式并重试
+        - GIF 自动转首帧 JPEG（减小体积）
+        - endpoint 不支持多模态时自动降级为文本 embedding
+
+        Args:
+            text: 文本内容（可选）
+                - 作为辅助信息提升 embedding 质量
+                - 示例: "表情包, tags: 猫咪, intents: 可爱"
+                - 如果为空，使用默认值 "表情包"
+            image_path: 本地图片文件路径（可选）
+                - 类型: 字符串或 None
+                - 示例: "/data/stickers/funny.gif"
+                - 与 image_url 二选一，image_url 优先
+            image_url: 在线图片 URL 或 data URL（可选）
+                - 类型: 字符串或 None
+                - 示例: "https://example.com/cat.jpg"
+                - 或 data URL: "data:image/jpeg;base64,..."
+                - 优先级高于 image_path
+
+        Returns:
+            List[float]: embedding 向量（浮点数列表）
+                - 维度: 取决于模型（doubao-embedding-vision 是 2048 维）
+                - 示例: [0.123, -0.456, 0.789, ...]
+
+        Raises:
+            RuntimeError: 如果 base_url 未配置
+            httpx.HTTPStatusError: 如果 API 调用失败
+            RuntimeError: 如果响应解析失败
+            FileNotFoundError: 如果 image_path 指定的文件不存在
+            asyncio.CancelledError: 如果任务被取消
+
+        降级策略:
+            - 如果 endpoint 不支持多模态 → 自动降级为 text-only embedding
+            - 如果没有提供 image → 自动降级为 text-only embedding
+            - 由上层决定是否捕获异常并进一步降级
+
+        使用场景:
+            - 表情包入库时的向量化
+            - 需要理解图片语义的场景
+            - 图文混合内容的向量化
+
+        Example:
+            >>> # 使用本地文件
+            >>> vec = await embedder.get_embedding_multimodal(
+            ...     text="猫咪表情包",
+            ...     image_path="/stickers/cat.gif"
+            ... )
+            >>> len(vec)  # 2048
+
+            >>> # 使用 data URL
+            >>> vec = await embedder.get_embedding_multimodal(
+            ...     image_url="data:image/jpeg;base64,..."
+            ... )
+        """
+
+        # ==================== 步骤1: 检查必需配置 ====================
+
+        if not self._base_url:
+            raise RuntimeError("未配置 embedder_base_url")
+
+        # ==================== 步骤2: 准备图片 URL ====================
+
+        # 优先使用 image_url，否则从 image_path 读取并转换
+        final_image_url = (image_url or "").strip() or None
+
+        if not final_image_url and image_path:
+            # 读取本地文件并转为 data URL
+            # GIF 会自动取首帧转 JPEG
+            try:
+                final_image_url = _image_path_to_data_url(image_path)
+            except Exception as e:
+                logger.error(f"图片转 data URL 失败: {image_path}, 错误: {e}")
+                raise
+
+        # 如果没有图片，降级为文本 embedding
+        if not final_image_url:
+            logger.debug("未提供图片，降级为文本 embedding")
+            return await self.get_embedding(text or "表情包")
+
+        # ==================== 步骤3: 构建请求参数 ====================
+
+        # 拼接完整的 API URL
+        url = f"{self._base_url}{self._endpoint}"
+
+        # 构建 HTTP 请求头
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+        # 可选: 复用 OpenAI SDK 的默认 headers 配置（例如 User-Agent）
+        extra_headers = getattr(plugin_config, "yuying_openai_default_headers", None)
+        if isinstance(extra_headers, dict) and extra_headers:
+            for k, v in extra_headers.items():
+                ks = str(k).strip()
+                if not ks or ks.lower() in {"authorization", "content-type"}:
+                    continue
+                vs = str(v).strip()
+                if vs:
+                    headers[ks] = vs
+
+        # 构建多种 payload 候选
+        payload_candidates = _build_mm_embedding_payloads(
+            self._endpoint, self.model, text=text, image_url=final_image_url
+        )
+
+        # 保存最后一次失败的响应体，用于错误提示
+        last_body: object = ""
+
+        # ==================== 步骤4: 发送 HTTP 请求（带重试） ====================
+
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                last_error: Optional[httpx.HTTPStatusError] = None
+                data: Optional[dict] = None
+
+                # 遍历所有 payload 候选，依次尝试
+                for payload in payload_candidates:
+                    try:
+                        resp = await client.post(url, headers=headers, json=payload)
+                        resp.raise_for_status()  # 检查 HTTP 状态码
+                        data = resp.json()
+                        break  # 成功了，跳出循环
+
+                    except httpx.HTTPStatusError as e:
+                        last_error = e
+                        try:
+                            last_body = e.response.json()
+                        except Exception:
+                            last_body = e.response.text
+                        continue  # 尝试下一个 payload
+
+                # 如果所有 payload 都失败了
+                if data is None and last_error is not None:
+                    raise last_error
+
+                if data is None:
+                    raise RuntimeError("Multimodal Embedding 请求失败: 未获得有效响应")
+
+        # ==================== 步骤5: 异常处理 ====================
+
+        except asyncio.CancelledError:
+            # 任务被取消，直接抛出，不捕获
+            raise
+
+        except httpx.HTTPStatusError as e:
+            # HTTP 状态错误，提供详细的错误信息
+            body = last_body
+            if not body:
+                try:
+                    body = e.response.json()
+                except Exception:
+                    body = e.response.text
+
+            msg = f"Multimodal Embedding 失败: {e} - {body}"
+            logger.error(msg)
+            raise
+
+        except Exception as e:
+            # 其他异常（网络错误、超时等）
+            logger.error(f"Multimodal Embedding 失败: {e}")
+            raise
+
+        # ==================== 步骤6: 从响应中提取 embedding 向量 ====================
+
+        try:
+            return _extract_embedding_from_response(data)
+
+        except Exception as e:
+            # 提取失败，记录错误日志
+            shape = None
+            try:
+                if isinstance(data, dict):
+                    d = data.get("data")
+                    if isinstance(d, list):
+                        shape = f"data[list,len={len(d)}]"
+                    elif isinstance(d, dict):
+                        shape = f"data[dict,keys={list(d.keys())}]"
+                    else:
+                        shape = f"data[{type(d).__name__}]"
+            except Exception:
+                shape = None
+
+            logger.error(f"Multimodal Embedding 响应解析失败: {e} (shape={shape})")
+            raise RuntimeError(f"Multimodal Embedding 响应解析失败: {e}") from e
 
 
 # ==================== 模块级全局实例 ====================

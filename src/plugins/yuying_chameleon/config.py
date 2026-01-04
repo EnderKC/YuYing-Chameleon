@@ -548,6 +548,23 @@ class Config(BaseModel):
     # - 默认值: 3
     # - 说明: 由LLM评估图片是否适合做表情包
 
+    yuying_sticker_use_semantic_search: bool = Field(default=True, alias="sticker_use_semantic_search")
+    # 是否启用表情包语义检索
+    # - 作用: 控制是否使用向量语义检索替代传统 intent+SQL 匹配
+    # - 默认值: True (启用)
+    # - True: 使用向量检索，语义匹配更准确
+    # - False: 使用传统 intent+SQL 检索（降级方案）
+    # - 说明: 语义检索需要表情包已向量化入库（Qdrant）
+
+    yuying_sticker_vector_top_k: int = Field(default=50, alias="sticker_vector_top_k")
+    # 表情包向量召回 topK
+    # - 作用: 向量检索时召回的候选表情包数量
+    # - 单位: 个(条数)
+    # - 默认值: 50
+    # - 说明: topK 越大，召回范围越广，但后续 rerank 计算量越大
+    # - 建议: 20-100 之间
+    # - 流程: Qdrant 召回 topK → tag/intent 精排 → cooldown 过滤 → 返回最佳
+
     # ==================== 回复策略配置 ====================
 
     yuying_global_cooldown_seconds: int = Field(default=30, alias="global_cooldown_seconds")

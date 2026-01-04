@@ -93,28 +93,39 @@ class StickerRepository:
     async def update_metadata(
         sticker_id: str,
         *,
-        tags: Optional[str],
-        intents: Optional[str],
-        style: Optional[str],
-        is_enabled: bool,
-        is_banned: bool,
-        ban_reason: Optional[str],
+        tags: Optional[str] = None,
+        intents: Optional[str] = None,
+        style: Optional[str] = None,
+        is_enabled: Optional[bool] = None,
+        is_banned: Optional[bool] = None,
+        ban_reason: Optional[str] = None,
+        ocr_text: Optional[str] = None,  # 新增：OCR 识别的文字
     ) -> None:
-        """更新表情包元信息（标签/意图/风格/封禁状态）。"""
+        """更新表情包元信息（标签/意图/风格/封禁状态/OCR文字）。"""
 
         async with get_session() as session:
+            # 构建更新字段字典，只更新非 None 的字段
+            values = {"updated_at": int(time.time())}
+
+            if tags is not None:
+                values["tags"] = tags
+            if intents is not None:
+                values["intents"] = intents
+            if style is not None:
+                values["style"] = style
+            if is_enabled is not None:
+                values["is_enabled"] = is_enabled
+            if is_banned is not None:
+                values["is_banned"] = is_banned
+            if ban_reason is not None:
+                values["ban_reason"] = ban_reason
+            if ocr_text is not None:
+                values["ocr_text"] = ocr_text  # 新增：更新 OCR 文字
+
             stmt = (
                 update(Sticker)
                 .where(Sticker.sticker_id == sticker_id)
-                .values(
-                    tags=tags,
-                    intents=intents,
-                    style=style,
-                    is_enabled=is_enabled,
-                    is_banned=is_banned,
-                    ban_reason=ban_reason,
-                    updated_at=int(time.time()),
-                )
+                .values(**values)
             )
             await session.execute(stmt)
             await session.commit()

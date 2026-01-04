@@ -155,6 +155,42 @@ class VisionHelper:
         return f"data:{mime};base64,{b64}"
 
     @staticmethod
+    def to_data_url(image_bytes: bytes, suffix: str) -> str:
+        """公开的 data URL 工具方法（供 embedding 等模块复用）
+
+        这个方法的作用:
+        - 为其他模块提供图片转 data URL 的能力
+        - 复用内部 _to_data_url 的实现
+        - 用于向量化、OCR 等需要将图片转为可传输格式的场景
+
+        为什么需要公开接口?
+        - 向量化模块需要将表情包转为 data URL 发送给 embedding API
+        - 避免重复实现图片编码逻辑
+        - 保持代码复用性和一致性
+
+        Args:
+            image_bytes: 图片的字节流数据
+                - 类型: bytes
+                - 示例: Path("sticker.jpg").read_bytes()
+            suffix: 文件后缀名
+                - 类型: str
+                - 示例: ".jpg", ".png", ".gif"
+                - 用于判断 MIME 类型
+
+        Returns:
+            str: data URL 格式的字符串
+                - 格式: "data:image/jpeg;base64,..."
+                - 可直接用于 API 调用
+
+        Example:
+            >>> from pathlib import Path
+            >>> image_data = Path("sticker.jpg").read_bytes()
+            >>> url = VisionHelper.to_data_url(image_data, ".jpg")
+            >>> # 可用于 embedding API 的图片输入
+        """
+        return VisionHelper._to_data_url(image_bytes, suffix)
+
+    @staticmethod
     async def caption_image(file_path: Optional[str] = None, *, url: Optional[str] = None) -> str:
         """生成简短的图片说明(<=20字)
 

@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from pathlib import Path  # 新增：读取文件路径
 from typing import Any, Dict, Optional
 
 from nonebot import logger
 
 from ..llm.client import cheap_llm
+from ..llm.vision import VisionHelper  # 新增：生成 data URL
 from ..storage.models import IndexJob
 from ..storage.db_writer import db_writer
 from ..storage.repositories.index_jobs_repo import IndexJobRepository
@@ -46,7 +48,7 @@ class StickerWorker:
                 await asyncio.sleep(10)
 
     async def _process_job(self, job: IndexJob) -> None:
-        """为一个表情包生成 tags/intents/style 与违规判定。"""
+        """为一个表情包生成 OCR文字 + tags/intents/style + 违规判定（一次 LLM 调用完成）。"""
 
         await db_writer.submit_and_wait(
             AsyncCallableJob(IndexJobRepository.mark_processing, args=(job.job_id,)),
@@ -56,7 +58,6 @@ class StickerWorker:
             payload = json.loads(job.payload_json) if job.payload_json else {}
             sticker_id = str(payload.get("sticker_id") or job.ref_id)
             intent_hint = payload.get("intent_hint")
-            ocr_text = payload.get("ocr_text")
 
             sticker = await StickerRepository.get_by_id(sticker_id)
             if not sticker:
@@ -66,29 +67,64 @@ class StickerWorker:
                 )
                 return
 
-            prompt = "\n".join(
+            # ==================== 准备图片 data URL ====================
+            try:
+                p = Path(sticker.file_path)
+                image_url = VisionHelper._to_data_url(p.read_bytes(), p.suffix)
+            except Exception as exc:
+                logger.error(f"读取表情包图片失败 sticker_id={sticker_id}: {exc}")
+                await db_writer.submit_and_wait(
+                    AsyncCallableJob(IndexJobRepository.update_status, args=(job.job_id, "failed")),
+                    priority=5,
+                )
+                return
+
+            # ==================== 构建 prompt（合并 OCR + 打标签） ====================
+            prompt_text = "\n".join(
                 [
-                    "你要为一个群聊表情包生成标签与意图，并判断是否违规。",
+                    "你要分析一个群聊表情包图片，完成以下任务：",
+                    "1. 识别图片中的所有文字（OCR），输出纯文本",
+                    "2. 为表情包生成标签（tags）和意图（intents）",
+                    "3. 判断是否违规（涉政、色情、暴力等）",
+                    "",
                     "输出必须是严格 JSON，对象结构：",
-                    '{"tags":["..."],"intents":["agree"],"style":"可选","is_banned":false,"ban_reason":""}',
+                    '{',
+                    '  "ocr_text": "图片中的文字（如果没有文字则为空字符串）",',
+                    '  "tags": ["标签1", "标签2"],',
+                    '  "intents": ["agree"],',
+                    '  "style": "可选风格描述",',
+                    '  "is_banned": false,',
+                    '  "ban_reason": ""',
+                    '}',
                     "",
                     "intents 枚举：agree/tease/shock/sorry/thanks/awkward/think/urge/neutral",
-                    "要求：tags 最多 6 个，每个 <=6 字；intents 1~3 个。",
-                    "注意：如果不确定，请保守输出 neutral，并将 tags 保持通用。",
+                    "要求：",
+                    "- ocr_text: 原样输出图片中的文字，不解释、不翻译",
+                    "- tags: 最多 6 个，每个 <=6 字，描述表情包的主题和情感",
+                    "- intents: 1~3 个，表示表情包适用的对话意图",
+                    "- style: 可选，描述表情包的风格（如\"手绘\"、\"真人\"等）",
+                    "- is_banned: 仅当明确违规时为 true",
+                    "",
+                    "注意：如果不确定 intents，请保守输出 neutral，并将 tags 保持通用。",
                     "",
                     f"sticker_id: {sticker_id}",
                     f"intent_hint: {(intent_hint or '').strip() or '（无）'}",
-                    f"ocr_text: {(ocr_text or sticker.ocr_text or '').strip() or '（无）'}",
                 ]
             )
 
-            content = await cheap_llm.chat_completion(
-                [
-                    {"role": "system", "content": "你是表情包标签器，只能输出 JSON。"},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.2,
-            )
+            # ==================== 构建包含图片的 messages ====================
+            messages = [
+                {"role": "system", "content": "你是表情包分析器，只能输出 JSON。"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt_text},
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                    ],
+                },
+            ]
+
+            content = await cheap_llm.chat_completion(messages, temperature=0.2)
             if not content:
                 await db_writer.submit_and_wait(
                     AsyncCallableJob(IndexJobRepository.update_status, args=(job.job_id, "failed")),
@@ -98,12 +134,15 @@ class StickerWorker:
 
             data = self._extract_first_json_object(content)
             if not isinstance(data, dict):
+                logger.warning(f"StickerWorker 无法解析 JSON: {content[:200]}")
                 await db_writer.submit_and_wait(
                     AsyncCallableJob(IndexJobRepository.update_status, args=(job.job_id, "failed")),
                     priority=5,
                 )
                 return
 
+            # ==================== 解析 LLM 输出 ====================
+            ocr_text = data.get("ocr_text") if isinstance(data.get("ocr_text"), str) else None
             tags = data.get("tags") if isinstance(data.get("tags"), list) else []
             intents = data.get("intents") if isinstance(data.get("intents"), list) else []
             style = data.get("style") if isinstance(data.get("style"), str) else None
@@ -113,6 +152,7 @@ class StickerWorker:
             tags_text = ",".join([str(t).strip() for t in tags if str(t).strip()][:6]) or None
             intents_text = ",".join([str(i).strip() for i in intents if str(i).strip()][:3]) or "neutral"
 
+            # ==================== 更新数据库（包括 ocr_text） ====================
             await db_writer.submit_and_wait(
                 AsyncCallableJob(
                     StickerRepository.update_metadata,
@@ -124,6 +164,7 @@ class StickerWorker:
                         "is_enabled": not is_banned,
                         "is_banned": is_banned,
                         "ban_reason": ban_reason,
+                        "ocr_text": ocr_text,  # 新增：更新 OCR 文字
                     },
                 ),
                 priority=5,

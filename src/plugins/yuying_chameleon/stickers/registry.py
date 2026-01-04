@@ -89,12 +89,14 @@ from PIL import Image  # Python图像处理库,读取图片
 
 # 导入项目模块
 from ..storage.repositories.sticker_repo import StickerRepository  # 表情包仓库
-from ..storage.models import Sticker  # 表情包模型
+from ..storage.repositories.index_jobs_repo import IndexJobRepository  # 索引任务仓库
+from ..storage.models import Sticker, IndexJob  # 表情包模型、索引任务模型
 from nonebot import logger  # NoneBot日志
 from ..llm.vision import VisionHelper  # 视觉模型客户端(OCR)
 from .utils import normalize_ocr_text  # OCR文本归一化
 from ..storage.db_writer import db_writer  # 数据库写入队列
 from ..storage.write_jobs import AsyncCallableJob  # 异步任务
+import json  # JSON序列化
 
 
 class StickerRegistry:
@@ -200,6 +202,12 @@ class StickerRegistry:
         # logger.info(): 记录信息级别日志
         logger.info(f"Scanning stickers in {base_path}...")
 
+        # 统计信息
+        total_scanned = 0  # 扫描到的图片文件总数
+        total_registered = 0  # 新注册的表情包数量
+        total_skipped = 0  # 跳过的表情包数量（已存在）
+        total_errors = 0  # 注册失败的数量
+
         # ==================== 步骤2: 递归遍历目录 ====================
 
         # os.walk(base_path): 递归遍历目录树
@@ -254,13 +262,30 @@ class StickerRegistry:
 
                     # ==================== 步骤5.3: 注册表情包 ====================
 
+                    total_scanned += 1  # 扫描计数
+
                     # await StickerRegistry.register_sticker(): 注册单个文件
                     # - file_path: 文件的完整路径
                     # - pack: 分类标识(default/auto)
-                    await StickerRegistry.register_sticker(file_path, pack=pack)
+                    # - 返回: "registered" 或 "skipped" 或 "error"
+                    result = await StickerRegistry.register_sticker(file_path, pack=pack)
+
+                    if result == "registered":
+                        total_registered += 1
+                    elif result == "skipped":
+                        total_skipped += 1
+                    elif result == "error":
+                        total_errors += 1
+
+        # ==================== 步骤6: 输出扫描完成统计 ====================
+
+        logger.info(
+            f"Sticker scanning completed: scanned={total_scanned}, "
+            f"registered={total_registered}, skipped={total_skipped}, errors={total_errors}"
+        )
 
     @staticmethod
-    async def register_sticker(file_path: str, pack: str = "default") -> None:
+    async def register_sticker(file_path: str, pack: str = "default") -> str:
         """将单个文件注册入stickers表(计算哈希、OCR、入库)
 
         这个方法的作用:
@@ -294,7 +319,10 @@ class StickerRegistry:
                 - 用途: 区分来源和管理策略
 
         Returns:
-            None: 无返回值
+            str: 注册结果状态
+                - "registered": 成功注册新表情包
+                - "skipped": 跳过已存在的表情包
+                - "error": 注册过程中发生错误
 
         Side Effects:
             - 读取文件内容(I/O)
@@ -334,6 +362,12 @@ class StickerRegistry:
         """
 
         try:
+            # ==================== 步骤0: 输出处理开始日志 ====================
+
+            # os.path.basename(file_path): 获取文件名（不含路径）
+            filename = os.path.basename(file_path)
+            logger.debug(f"Processing sticker: {filename}")
+
             # ==================== 步骤1: 读取文件内容 ====================
 
             # open(file_path, "rb"): 以二进制只读模式打开文件
@@ -363,7 +397,10 @@ class StickerRegistry:
 
             # existing: 如果查到记录
             if existing:
-                return  # 已注册,直接返回,不重复处理
+                logger.debug(
+                    f"Skipping existing sticker: {filename} (SHA256: {file_sha256[:8]}...)"
+                )
+                return "skipped"  # 已注册,直接返回
 
             # ==================== 步骤4: 计算感知哈希pHash ====================
 
@@ -380,14 +417,12 @@ class StickerRegistry:
                 # - 示例: "a1b2c3d4e5f6g7h8"
                 phash = str(imagehash.phash(img))
 
-            # ==================== 步骤5: OCR识别图片文字 ====================
+            # ==================== 步骤5: OCR 由后台任务完成 ====================
 
-            # await VisionHelper.ocr_image(file_path): 调用OCR识别
-            # - 使用视觉模型识别图片中的文字
-            # - 成功: 返回识别的文本字符串
-            # - 失败: 返回None或空字符串(降级策略)
-            # - 网络请求: 可能耗时较长
-            ocr_text = await VisionHelper.ocr_image(file_path)
+            # OCR 不再在注册时调用，而是延迟到 StickerWorker 与打标签合并完成
+            # 这样可以节省 50% 的 token 消耗（从 2 次 LLM 调用降到 1 次）
+            # StickerWorker 会同时完成：OCR + tags + intents + is_banned
+            ocr_text = None  # 暂时为空，等待后台任务填充
 
             # ==================== 步骤6: 生成fingerprint去重指纹 ====================
 
@@ -451,11 +486,70 @@ class StickerRegistry:
                 priority=5,
             )
 
-            # ==================== 步骤9: 输出成功日志 ====================
+            # ==================== 步骤9: 创建索引任务 ====================
+
+            # 自动为新注册的表情包创建两个索引任务：
+            # 1. 向量化任务：将图片向量化并存入 Qdrant（用于语义检索）
+            # 2. 标签生成任务：调用 LLM 分析图片生成 tags/intents（用于分类和过滤）
+            try:
+                # 任务1: 向量化任务（IndexWorker 处理）
+                vector_job = IndexJob(
+                    item_type="sticker",
+                    ref_id=file_sha256,
+                    payload_json=json.dumps(
+                        {"sticker_id": file_sha256}, ensure_ascii=False
+                    ),
+                    status="pending",
+                    retry_count=0,
+                    next_retry_ts=0,
+                )
+
+                # 任务2: 标签生成任务（StickerWorker 处理）
+                # 注意：OCR 不再预先完成，StickerWorker 会同时完成 OCR + 打标签
+                tag_job = IndexJob(
+                    item_type="sticker_tag",
+                    ref_id=file_sha256,
+                    payload_json=json.dumps(
+                        {
+                            "sticker_id": file_sha256,
+                            "intent_hint": "",  # 手动导入的表情包没有 intent hint
+                            # ocr_text 字段被移除：由 StickerWorker 的 LLM 调用同时完成
+                        },
+                        ensure_ascii=False,
+                    ),
+                    status="pending",
+                    retry_count=0,
+                    next_retry_ts=0,
+                )
+
+                # 提交到数据库写入队列
+                await db_writer.submit_and_wait(
+                    AsyncCallableJob(IndexJobRepository.add, args=(vector_job,)),
+                    priority=5,
+                )
+                await db_writer.submit_and_wait(
+                    AsyncCallableJob(IndexJobRepository.add, args=(tag_job,)),
+                    priority=5,
+                )
+                logger.debug(
+                    f"Created 2 index jobs for sticker {file_sha256[:8]}... "
+                    f"(vectorization + tag generation)"
+                )
+            except Exception as e:
+                # 索引任务创建失败不影响表情包注册
+                # 可以后续通过 backfill 补齐
+                logger.warning(
+                    f"Failed to create index jobs for sticker {file_sha256[:8]}...: {e}"
+                )
+
+            # ==================== 步骤10: 输出成功日志 ====================
 
             # logger.info(): 记录信息级别日志
             # 输出SHA256前缀,便于追踪
-            logger.info(f"Registered sticker {file_sha256}")
+            logger.info(f"Registered sticker {filename} (SHA256: {file_sha256[:8]}...)")
+
+            # 返回成功状态
+            return "registered"
 
         except Exception as e:
             # ==================== 异常处理: 记录错误并继续 ====================
@@ -465,4 +559,6 @@ class StickerRegistry:
             # - file_path: 失败的文件路径
             # - e: 异常对象
             logger.error(f"注册表情包失败 {file_path}: {e}")
-            # 不抛出异常,让scan_local_stickers()继续处理其他文件
+
+            # 返回错误状态
+            return "error"

@@ -16,6 +16,16 @@
 .dmypy.json
 .dmypy.json
 
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.webp
+*.mp4
+*.mp3
+*.wav
+*.ogg
+*.flac
 ### Python ###
 # Byte-compiled / optimized / DLL files
 __pycache__/

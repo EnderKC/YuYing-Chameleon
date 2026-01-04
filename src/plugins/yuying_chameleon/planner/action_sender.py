@@ -12,7 +12,8 @@ from nonebot import logger
 
 from ..config import plugin_config
 from ..policy.gatekeeper import Gatekeeper
-from ..stickers.selector import StickerSelector
+from ..stickers.selector import StickerSelector  # 传统 SQL selector（降级用）
+from ..stickers.semantic_selector import StickerSemanticSelector  # 语义检索 selector
 from ..stickers.sender import StickerSender
 from ..storage.models import RawMessage
 from ..storage.models import IndexJob
@@ -25,6 +26,48 @@ from ..storage.write_jobs import AsyncCallableJob
 
 class ActionSender:
     """将动作列表发送到聊天窗口。"""
+
+    @staticmethod
+    def _extract_query_text_from_actions(
+        actions: List[Dict[str, Any]], current_idx: int
+    ) -> str:
+        """从当前回复的 actions 中提取文本内容作为语义检索的 query
+
+        这个方法的作用:
+        - 机器人发表情包通常和消息一起发送
+        - 提取表情包之前的 text 内容作为语义检索的 query
+        - 如果没有 text，返回默认值
+
+        提取策略:
+        - 从当前 sticker 动作往前找最近的 text 动作
+        - 如果找到，返回 text 内容
+        - 如果找不到，返回默认值 "表情包"
+
+        Args:
+            actions: 所有动作列表
+            current_idx: 当前 sticker 动作的索引
+
+        Returns:
+            str: 提取的文本内容，用于语义检索
+
+        Example:
+            >>> actions = [
+            ...     {"type": "text", "content": "哈哈太搞笑了"},
+            ...     {"type": "sticker", "intent": "funny"}
+            ... ]
+            >>> ActionSender._extract_query_text_from_actions(actions, 1)
+            '哈哈太搞笑了'
+        """
+        # 从当前位置往前找最近的 text 动作
+        for i in range(current_idx - 1, -1, -1):
+            action = actions[i]
+            if action.get("type") == "text":
+                content = str(action.get("content") or "").strip()
+                if content:
+                    return content
+
+        # 如果没有找到，返回默认值
+        return "表情包"
 
     @staticmethod
     async def send_actions(
@@ -58,12 +101,50 @@ class ActionSender:
                     content=content,
                 )
                 await Gatekeeper.mark_sent(scene_type, scene_id)
+
             elif t == "sticker":
+                # 提取 intent（LLM 输出的意图）
                 intent = str(action.get("intent") or "neutral").strip()
-                sticker = await StickerSelector.select_sticker(intent, scene_type, scene_id)
+
+                # 根据配置决定使用哪种选择器
+                use_semantic = bool(
+                    getattr(plugin_config, "yuying_sticker_use_semantic_search", True)
+                )
+
+                if use_semantic:
+                    # 使用语义检索选择表情包
+                    # 提取当前回复中的 text 作为 query
+                    query_text = ActionSender._extract_query_text_from_actions(
+                        actions, idx
+                    )
+
+                    logger.debug(
+                        f"[表情包选择] 使用语义检索: query_text={query_text}, intent={intent}"
+                    )
+
+                    sticker = await StickerSemanticSelector.select_sticker(
+                        intent=intent,
+                        query_text=query_text,
+                        scene_type=scene_type,
+                        scene_id=scene_id,
+                    )
+                else:
+                    # 使用传统 SQL selector（配置关闭语义检索）
+                    logger.debug(
+                        f"[表情包选择] 使用传统 SQL 检索: intent={intent}"
+                    )
+                    sticker = await StickerSelector.select_sticker(
+                        intent, scene_type, scene_id
+                    )
+
+                # 如果没有选到表情包，跳过
                 if not sticker:
                     continue
+
+                # 发送表情包消息
                 await matcher.send(StickerSender.create_message(sticker))
+
+                # 记录使用情况（用于 cooldown）
                 await db_writer.submit(
                     AsyncCallableJob(
                         StickerUsageRepository.add_usage,
@@ -72,6 +153,8 @@ class ActionSender:
                     ),
                     priority=5,
                 )
+
+                # 记录机器人消息
                 await ActionSender._record_bot_message(
                     bot_id=str(bot.self_id),
                     scene_type=scene_type,

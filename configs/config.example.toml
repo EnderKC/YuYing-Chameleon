@@ -81,9 +81,11 @@ memory_daily_limit_private = 40       # 私聊每日限额（条/天）
 memory_session_idle_timeout = 600.0   # 会话空闲超时（秒，10分钟）
 
 # 表情包设置
-sticker_promote_threshold = 3
-sticker_cooldown_seconds = 60
-sticker_meme_score_threshold = 3
+sticker_promote_threshold = 3        # 候选表情包晋升阈值（使用次数）
+sticker_cooldown_seconds = 60        # 表情包使用冷却时间（秒）
+sticker_meme_score_threshold = 3     # 表情包趣味性评分阈值（1-10分）
+sticker_use_semantic_search = true   # 是否启用语义检索（向量匹配）
+sticker_vector_top_k = 50            # 向量召回候选数量（topK）
 
 # Nano 模型设置（用于心流模式的前置决策）
 nano_llm_base_url = "https://api.openai.com/v1"
