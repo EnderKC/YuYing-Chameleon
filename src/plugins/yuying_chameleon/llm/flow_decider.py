@@ -28,6 +28,7 @@ decided = await nano_should_reply_yes_no(
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -117,6 +118,14 @@ def _parse_yes_no(text: Optional[str]) -> Optional[bool]:
     if not t:
         return None
 
+    # 一些模型/网关会返回类似 <|begin_of_box|>no<|end_of_box|> 的包裹 token
+    # 或其它 <|...|> 特殊标记；先剥离以提升容错。
+    if "<|" in t and "|>" in t:
+        t = re.sub(r"<\|[^>]*\|>", " ", t)
+        t = re.sub(r"\s+", " ", t).strip()
+        if not t:
+            return None
+
     # 1. 清理常见的包装符号（引号、代码块等）
     t = t.strip("`\"' \n\r\t")
     if not t:
@@ -140,6 +149,9 @@ def _parse_yes_no(text: Optional[str]) -> Optional[bool]:
         return False
 
     # 6. 无法解析
+    m = re.search(r"\b(yes|no)\b", t)
+    if m:
+        return True if m.group(1) == "yes" else False
     return None
 
 

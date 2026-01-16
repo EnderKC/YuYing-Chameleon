@@ -561,6 +561,15 @@ class ActionPlanner:
             else:
                 # 获取成功：注入发送者和内容
                 sender_id = str(reply_to_message.get("sender_id") or "").strip()
+                ts = reply_to_message.get("timestamp")
+                if ts is None:
+                    ts = reply_to_message.get("time")
+                if ts is not None:
+                    try:
+                        dt = datetime.fromtimestamp(int(ts))
+                        reply_lines.append(f"- 时间：{dt.strftime('%Y-%m-%d %H:%M')}")
+                    except Exception:
+                        pass
                 content = str(reply_to_message.get("content") or "").replace("\n", " ").strip()
 
                 # 控制引用内容长度，避免 prompt 膨胀（约 200-300 字）

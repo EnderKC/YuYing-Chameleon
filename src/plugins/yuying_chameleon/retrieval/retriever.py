@@ -77,6 +77,7 @@ prompt = f\"\"\"
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Dict, List, Optional  # 类型提示
 
 from nonebot import logger  # NoneBot日志记录器
@@ -650,6 +651,16 @@ class Retriever:
                 # 跳过空文本
                 if not text:
                     continue
+
+                # 若是消息片段且带时间戳，则以可读时间前缀注入（不使用纯时间戳）
+                if str(payload.get("kind") or "") == "msg_chunk":
+                    ts = payload.get("timestamp")
+                    if ts is not None:
+                        try:
+                            dt = datetime.fromtimestamp(int(ts))
+                            text = f"（{dt.strftime('%Y-%m-%d %H:%M')}）" + text
+                        except Exception:
+                            pass
 
                 # ==================== 步骤3.6: 截断过长文本 ====================
 

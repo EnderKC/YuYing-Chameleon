@@ -11,6 +11,7 @@ import asyncio
 import json
 import re
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -66,17 +67,25 @@ def _format_recent_dialogue_line(
     text: str,
     sender_qq_id: str,
     is_bot: bool,
+    timestamp: Optional[int] = None,
 ) -> str:
     t = (text or "").strip().replace("\n", " ")
     if len(t) > 120:
         t = t[:120] + "…"
+    when = ""
+    if timestamp is not None:
+        try:
+            dt = datetime.fromtimestamp(int(timestamp))
+            when = f"（{dt.strftime('%Y-%m-%d %H:%M')}）"
+        except Exception:
+            when = ""
     if is_bot:
         who = "你"
     elif sender_qq_id == current_qq_id:
         who = f"我（{current_qq_id}）"
     else:
         who = f"群友({sender_qq_id})"
-    return f"{who}：{t}"
+    return f"{when}{who}：{t}" if when else f"{who}：{t}"
 
 
 async def _build_recent_dialogue(
@@ -106,6 +115,7 @@ async def _build_recent_dialogue(
                     text=str(m.content or ""),
                     sender_qq_id=str(m.qq_id),
                     is_bot=bool(getattr(m, "is_bot", False)),
+                    timestamp=getattr(m, "timestamp", None),
                 )
             )
     except Exception:
@@ -298,6 +308,7 @@ async def _get_reply_message_info(
         return {
             "sender_id": "",
             "content": "",
+            "timestamp": None,
             "failed": True,
             "reason": "timeout",
         }
@@ -305,6 +316,7 @@ async def _get_reply_message_info(
         return {
             "sender_id": "",
             "content": "",
+            "timestamp": None,
             "failed": True,
             "reason": _classify_failure_reason(exc),
         }
@@ -313,8 +325,17 @@ async def _get_reply_message_info(
 
     sender_id = ""
     content = ""
+    msg_ts: Optional[int] = None
 
     if isinstance(data, dict):
+        # 提取消息时间（Unix 秒）
+        t = data.get("time")
+        if t is not None:
+            try:
+                msg_ts = int(t)
+            except Exception:
+                msg_ts = None
+
         # 提取发送者 ID
         sender = data.get("sender")
         if isinstance(sender, dict):
@@ -335,6 +356,7 @@ async def _get_reply_message_info(
         return {
             "sender_id": "",
             "content": "",
+            "timestamp": msg_ts,
             "failed": True,
             "reason": "malformed_response",
         }
@@ -342,6 +364,7 @@ async def _get_reply_message_info(
     return {
         "sender_id": sender_id,
         "content": content,
+        "timestamp": msg_ts,
         "failed": False,
         "reason": "",
     }
@@ -802,6 +825,11 @@ async def _process_normalized(bot: Bot, normalized: NormalizedMessage) -> None:
         "replied_to_bot": bool(replied_to_bot),  # 是否回复了bot消息
         "directed_to_bot": bool(directed_to_bot),  # 是否直接对bot说的(综合判断)
     }
+    try:
+        dt = datetime.fromtimestamp(int(getattr(raw_msg, "timestamp", 0) or 0))
+        prompt_meta["message_time"] = dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        pass
 
     # 9) 动作规划
     actions = await ActionPlanner.plan_actions(
