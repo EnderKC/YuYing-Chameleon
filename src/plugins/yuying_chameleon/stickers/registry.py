@@ -366,7 +366,7 @@ class StickerRegistry:
 
             # os.path.basename(file_path): 获取文件名（不含路径）
             filename = os.path.basename(file_path)
-            logger.debug(f"Processing sticker: {filename}")
+            # logger.debug(f"Processing sticker: {filename}")
 
             # ==================== 步骤1: 读取文件内容 ====================
 
@@ -397,9 +397,9 @@ class StickerRegistry:
 
             # existing: 如果查到记录
             if existing:
-                logger.debug(
-                    f"Skipping existing sticker: {filename} (SHA256: {file_sha256[:8]}...)"
-                )
+                # logger.debug(
+                #     f"Skipping existing sticker: {filename} (SHA256: {file_sha256[:8]}...)"
+                # )
                 return "skipped"  # 已注册,直接返回
 
             # ==================== 步骤4: 计算感知哈希pHash ====================

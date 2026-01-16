@@ -201,3 +201,82 @@ mcp_max_parallel_tools = 4     # 并发执行的最大并行度（仅在 paralle
 # 2. Schema 转换：MCP inputSchema 会自动转换为 OpenAI parameters，复杂 schema 可能被降级
 # 3. 安全性：工具有完整的系统访问权限，请只配置可信的 MCP server
 # 4. 调试：启用 MCP 后可查看日志中的 "MCP tools 已加载: X 个" 确认工具注册成功
+
+# ==================== LLM 模型组与任务路由配置 ====================
+# 说明：
+# - 此配置为高级功能，支持模型组（多模型 fallback）和任务级别模型选择
+# - 不配置此段时，将使用上方的旧配置（openai_*, cheap_llm_*, nano_llm_*）
+# - 配置此段后，可实现：
+#   1. 模型组：配置多个模型，失败时自动切换下一个
+#   2. 任务路由：不同任务使用不同模型（如摘要用便宜模型，对话用高级模型）
+#   3. 向下兼容：未配置的组/任务仍使用旧配置
+
+[yuying_chameleon.llm]
+
+# 全局策略（可选）
+[yuying_chameleon.llm.policy]
+per_model_attempts = 1              # 每个模型最多尝试次数（默认1，不重试）
+total_attempts_cap = 5              # 单次调用最多总尝试次数（防止模型组太长）
+treat_empty_as_failure = true       # content=="" 且无 tool_calls 视为失败
+base_backoff_seconds = 0.3          # 重试退避基础值（秒，带 jitter）
+
+# 主模型组（用于主对话、动作规划等核心任务）
+# 方式1：单模型
+[yuying_chameleon.llm.main]
+model = "gpt-4-turbo"
+
+# 方式2：模型组（按顺序 fallback）
+# models = ["gpt-4-turbo", "claude-3-opus"]
+
+# 便宜模型组（用于摘要、标签生成等后台任务）
+# 四种配置方式任选其一：
+
+# 方式1：使用统一供应商配置（推荐，适合同一供应商的多个模型）
+[yuying_chameleon.llm.cheap]
+base_url = "https://api.deepseek.com/v1"  # 模型组级别的 base_url
+api_key = "sk-deepseek-xxx"                # 模型组级别的 api_key
+timeout = 12.0                             # 模型组级别的 timeout
+models = ["deepseek-chat", "deepseek-coder"]  # 都使用上面的 DeepSeek 配置，失败时自动切换
+
+# 方式2：混合多个供应商（旧格式，适合跨供应商 fallback）
+# [yuying_chameleon.llm.cheap]
+# base_url = "https://api.deepseek.com/v1"  # 模型组默认使用 DeepSeek
+# api_key = "sk-deepseek-xxx"
+# timeout = 12.0
+# models = [
+#   "deepseek-chat",  # 使用模型组的 DeepSeek 配置
+#   { model = "gpt-3.5-turbo", base_url = "https://api.openai.com/v1", api_key = "sk-openai-xxx", timeout = 10.0 }  # 内联覆盖为 OpenAI
+# ]
+
+# 方式3：供应商数组（新格式，推荐！结构最清晰）
+# [yuying_chameleon.llm.cheap]
+# providers = [
+#   { name = "deepseek", base_url = "https://api.deepseek.com/v1", api_key = "sk-deepseek-xxx", timeout = 12.0, models = ["deepseek-chat", "deepseek-coder"] },
+#   { name = "openai", base_url = "https://api.openai.com/v1", api_key = "sk-openai-xxx", timeout = 10.0, models = ["gpt-3.5-turbo", "gpt-4o-mini"] }
+# ]
+
+# 方式4：仅配置模型列表（使用上方旧配置的 cheap_llm_* 参数）
+# [yuying_chameleon.llm.cheap]
+# models = ["gpt-3.5-turbo", "claude-3-haiku"]
+
+# Nano 模型组（用于心流模式的快速决策）
+[yuying_chameleon.llm.nano]
+model = "gpt-4o-mini"
+
+# 任务级别路由（可选，不配置则使用默认映射）
+# 值可以是：模型组名（main/cheap/nano）或 直接的模型名
+# 说明：所有模型都支持多模态，图片相关任务直接使用 main 或 cheap 即可
+[yuying_chameleon.llm.tasks]
+action_planner = "main"              # 主对话/动作规划
+memory_extraction = "cheap"          # 记忆提取
+memory_condenser = "main"            # 记忆浓缩
+summary_generation = "cheap"         # 摘要生成
+sticker_tagging = "cheap"            # 表情包标签
+flow_decider = "nano"                # 心流模式决策
+vision_caption = "main"              # 图片说明（所有模型都支持多模态）
+vision_ocr = "main"                  # OCR（所有模型都支持多模态）
+personality_reflection = "cheap"     # 人格反思（recent 层）
+personality_core = "main"            # 人格核心原则更新（core 层）
+
+# 示例：直接指定模型名（而非模型组）
+# memory_condenser = "gpt-4"         # 直接使用 gpt-4，不走模型组

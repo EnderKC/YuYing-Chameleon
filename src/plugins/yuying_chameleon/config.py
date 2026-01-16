@@ -40,7 +40,7 @@ database_url = plugin_config.yuying_database_url
 
 import os  # 用于读取环境变量
 from pathlib import Path  # 用于处理文件路径
-from typing import Any, Dict, List, Optional  # 类型提示
+from typing import Any, Dict, List, Optional, Union  # 类型提示
 
 from nonebot import get_driver  # 获取NoneBot驱动器,用于读取全局配置
 from nonebot import logger  # NoneBot的日志记录器
@@ -89,6 +89,344 @@ class MCPServerConfig(BaseModel):
 
     # 用于提升 LLM 可读性：显示名会写进工具 description 的 [ServerName] 前缀里
     display_name: str = Field(default="", alias="display_name")
+
+    class Config:
+        extra = Extra.ignore
+        allow_population_by_field_name = True
+
+
+class LLMPolicyConfig(BaseModel):
+    """LLM 模型组的全局策略配置。
+
+    控制模型 fallback、重试、超时等行为。
+
+    TOML 示例:
+      [yuying_chameleon.llm.policy]
+      per_model_attempts = 1
+      total_attempts_cap = 5
+      treat_empty_as_failure = true
+      base_backoff_seconds = 0.3
+    """
+
+    per_model_attempts: int = Field(default=1, alias="per_model_attempts")
+    # 每个模型最多尝试次数
+    # - 作用: 单个模型失败后重试几次再切换下一个
+    # - 默认值: 1 (不重试，直接切换下一个模型)
+    # - 建议: 1 (避免重试浪费时间，直接 fallback 更快)
+
+    total_attempts_cap: int = Field(default=5, alias="total_attempts_cap")
+    # 单次调用最多总尝试次数
+    # - 作用: 防止模型组太长导致无限重试
+    # - 默认值: 5
+    # - 说明: 跨所有模型的累计尝试次数上限
+
+    treat_empty_as_failure: bool = Field(default=True, alias="treat_empty_as_failure")
+    # content=="" 且无 tool_calls 视为失败
+    # - 作用: LLM 返回空内容时是否触发 fallback
+    # - 默认值: True (空响应视为失败，尝试下一个模型)
+    # - False: 空响应也视为成功，不触发 fallback
+
+    base_backoff_seconds: float = Field(default=0.3, alias="base_backoff_seconds")
+    # 重试退避基础值（秒）
+    # - 作用: 重试前等待的基础时间（带 jitter 随机化）
+    # - 单位: 秒
+    # - 默认值: 0.3 (300ms)
+    # - 说明: 实际等待时间会加随机抖动，避免雪崩
+
+    class Config:
+        extra = Extra.ignore
+        allow_population_by_field_name = True
+
+
+class LLMModelConfig(BaseModel):
+    """单个 LLM 模型的内联配置（用于模型组中的对象形式）。
+
+    允许在模型组中为特定模型指定独立的 base_url/api_key/timeout 等参数。
+
+    TOML 示例:
+      models = [
+        "gpt-3.5-turbo",
+        { model = "deepseek-chat", base_url = "https://api.deepseek.com/v1", api_key = "sk-...", timeout = 12.0 }
+      ]
+    """
+
+    model: str = Field(alias="model")
+    # 模型名称（必填）
+
+    base_url: Optional[str] = Field(default=None, alias="base_url")
+    # API 基础 URL（可选，留空则使用该模型组的默认配置）
+
+    api_key: Optional[str] = Field(default=None, alias="api_key")
+    # API 密钥（可选，留空则使用该模型组的默认配置）
+
+    timeout: Optional[float] = Field(default=None, alias="timeout")
+    # 请求超时（秒，可选，留空则使用该模型组的默认配置）
+
+    class Config:
+        extra = Extra.ignore
+        allow_population_by_field_name = True
+
+
+class ProviderConfig(BaseModel):
+    """单个供应商的配置（新格式，推荐）。
+
+    将同一供应商的多个模型统一配置，结构更清晰。
+
+    TOML 示例:
+      [yuying_chameleon.llm.cheap]
+      providers = [
+        {
+          name = "deepseek",
+          base_url = "https://api.deepseek.com/v1",
+          api_key = "sk-deepseek-xxx",
+          timeout = 12.0,
+          models = ["deepseek-chat", "deepseek-coder"]
+        },
+        {
+          name = "openai",
+          base_url = "https://api.openai.com/v1",
+          api_key = "sk-openai-xxx",
+          timeout = 10.0,
+          models = ["gpt-3.5-turbo", "gpt-4o-mini"]
+        }
+      ]
+    """
+
+    name: str = Field(alias="name")
+    # 供应商名称
+    # - 作用: 用于日志标识和错误追踪
+    # - 示例: "deepseek", "openai", "anthropic"
+
+    base_url: str = Field(alias="base_url")
+    # API 基础 URL
+    # - 作用: 该供应商的 API 服务地址
+    # - 必填: 是
+
+    api_key: str = Field(alias="api_key")
+    # API 密钥
+    # - 作用: 访问该供应商服务的凭证
+    # - 必填: 是
+
+    timeout: Optional[float] = Field(default=None, alias="timeout")
+    # 请求超时（秒）
+    # - 作用: 该供应商所有模型的默认超时时间
+    # - 可选: 是（留空则使用模型组的默认配置）
+
+    models: List[str] = Field(alias="models")
+    # 该供应商下的模型列表
+    # - 作用: 按顺序尝试，失败时自动切换下一个
+    # - 必填: 是（至少包含一个模型）
+    # - 示例: ["deepseek-chat", "deepseek-coder"]
+
+    class Config:
+        extra = Extra.ignore
+        allow_population_by_field_name = True
+
+
+class LLMModelGroupConfig(BaseModel):
+    """LLM 模型组配置（main/cheap/nano/vision）。
+
+    支持四种配置方式:
+    1. 单模型: model = "gpt-4-turbo"
+    2. 模型组（统一供应商）: base_url + api_key + models = [...]
+    3. 模型组（多供应商混合）: models 中混合字符串和内联配置对象
+    4. 供应商数组（推荐）: providers = [{ name, base_url, api_key, models }, ...]
+
+    TOML 示例:
+      # 方式1: 单模型
+      [yuying_chameleon.llm.main]
+      model = "gpt-4-turbo"
+
+      # 方式2: 模型组（统一供应商配置）
+      [yuying_chameleon.llm.cheap]
+      base_url = "https://api.deepseek.com/v1"
+      api_key = "sk-deepseek-xxx"
+      timeout = 12.0
+      models = ["deepseek-chat", "deepseek-coder"]  # 都使用上面的配置
+
+      # 方式3: 混合多供应商（旧格式）
+      [yuying_chameleon.llm.cheap]
+      base_url = "https://api.deepseek.com/v1"  # 默认配置
+      api_key = "sk-deepseek-xxx"
+      models = [
+        "deepseek-chat",  # 使用模型组的默认配置
+        { model = "gpt-3.5-turbo", base_url = "https://api.openai.com/v1", api_key = "sk-openai-xxx" }  # 内联覆盖
+      ]
+
+      # 方式4: 供应商数组（推荐，结构最清晰）
+      [yuying_chameleon.llm.cheap]
+      providers = [
+        { name = "deepseek", base_url = "https://api.deepseek.com/v1", api_key = "sk-deepseek-xxx", timeout = 12.0, models = ["deepseek-chat", "deepseek-coder"] },
+        { name = "openai", base_url = "https://api.openai.com/v1", api_key = "sk-openai-xxx", timeout = 10.0, models = ["gpt-3.5-turbo", "gpt-4o-mini"] }
+      ]
+    """
+
+    # ==================== 模型定义（二选一） ====================
+    model: Optional[str] = Field(default=None, alias="model")
+    # 单模型名称（与 models 二选一）
+
+    models: Optional[List[Union[str, LLMModelConfig]]] = Field(default=None, alias="models")
+    # 模型组列表（与 model 二选一）
+    # - 元素可以是字符串（模型名）或 LLMModelConfig 对象（带独立配置）
+    # - 按顺序尝试，失败时自动切换下一个
+
+    # ==================== 模型组级别配置（供应商统一配置） ====================
+    base_url: Optional[str] = Field(default=None, alias="base_url")
+    # 模型组的 base_url（可选）
+    # - 作用：为整个模型组指定统一的 API 地址
+    # - 优先级：模型组配置 > 传入的默认值
+    # - 示例：配置 DeepSeek 供应商的所有模型
+
+    api_key: Optional[str] = Field(default=None, alias="api_key")
+    # 模型组的 api_key（可选）
+    # - 作用：为整个模型组指定统一的 API 密钥
+    # - 优先级：模型组配置 > 传入的默认值
+
+    timeout: Optional[float] = Field(default=None, alias="timeout")
+    # 模型组的 timeout（可选）
+    # - 作用：为整个模型组指定统一的超时时间
+    # - 优先级：模型组配置 > 传入的默认值
+
+    # ==================== 新格式：供应商数组（推荐） ====================
+    providers: Optional[List[ProviderConfig]] = Field(default=None, alias="providers")
+    # 供应商列表（新格式，推荐）
+    # - 作用：将同一供应商的多个模型统一配置，结构更清晰
+    # - 优先级：providers > models > model
+    # - 说明：配置 providers 后，会自动展开为 models 格式
+    # - 示例：见 ProviderConfig 类的文档
+
+    @root_validator(pre=False)
+    def _expand_providers(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        """将 providers 展开为 models 格式（向下兼容）。
+
+        转换逻辑：
+        1. 如果配置了 providers，将其展开为 models 列表
+        2. 每个 provider 下的模型会被转换为 LLMModelConfig 对象
+        3. 原有的 models 和 model 字段会被忽略
+        """
+        providers = values.get("providers")
+        if not providers:
+            return values
+
+        # 展开 providers 为 models 列表
+        expanded_models: List[Union[str, LLMModelConfig]] = []
+        for provider in providers:
+            for model_name in provider.models:
+                # 为每个模型创建 LLMModelConfig 对象
+                model_config = LLMModelConfig(
+                    model=model_name,
+                    base_url=provider.base_url,
+                    api_key=provider.api_key,
+                    timeout=provider.timeout,
+                )
+                expanded_models.append(model_config)
+
+        # 覆盖 models 字段
+        values["models"] = expanded_models
+        # 清空 model 字段（避免冲突）
+        values["model"] = None
+
+        return values
+
+    class Config:
+        extra = Extra.ignore
+        allow_population_by_field_name = True
+
+
+class LLMTasksConfig(BaseModel):
+    """LLM 任务级别路由配置。
+
+    将不同任务映射到不同的模型组或直接模型名。
+
+    TOML 示例:
+      [yuying_chameleon.llm.tasks]
+      action_planner = "main"              # 主对话/动作规划
+      memory_extraction = "cheap"          # 记忆提取
+      memory_condenser = "main"            # 记忆浓缩
+      summary_generation = "cheap"         # 摘要生成
+      sticker_tagging = "cheap"            # 表情包标签
+      flow_decider = "nano"                # 心流模式决策
+      vision_caption = "main"              # 图片说明（所有模型都支持多模态）
+      vision_ocr = "main"                  # OCR（所有模型都支持多模态）
+      personality_reflection = "cheap"     # 人格反思（recent）
+      personality_core = "main"            # 人格核心原则更新（core）
+    """
+
+    action_planner: str = Field(default="main", alias="action_planner")
+    # 主对话/动作规划任务
+
+    memory_extraction: str = Field(default="cheap", alias="memory_extraction")
+    # 记忆提取任务
+
+    memory_condenser: str = Field(default="main", alias="memory_condenser")
+    # 记忆浓缩任务
+
+    summary_generation: str = Field(default="cheap", alias="summary_generation")
+    # 摘要生成任务
+
+    sticker_tagging: str = Field(default="cheap", alias="sticker_tagging")
+    # 表情包标签生成任务
+
+    flow_decider: str = Field(default="nano", alias="flow_decider")
+    # 心流模式决策任务
+
+    vision_caption: str = Field(default="main", alias="vision_caption")
+    # 图片说明任务（所有模型都支持多模态）
+
+    vision_ocr: str = Field(default="main", alias="vision_ocr")
+    # OCR 任务（所有模型都支持多模态）
+
+    personality_reflection: str = Field(default="cheap", alias="personality_reflection")
+    # 人格反思任务（recent 层）
+
+    personality_core: str = Field(default="main", alias="personality_core")
+    # 人格核心原则更新任务（core 层）
+
+    class Config:
+        extra = Extra.ignore
+        allow_population_by_field_name = True
+
+
+class LLMConfig(BaseModel):
+    """LLM 模型组与任务路由的总配置。
+
+    包含全局策略、模型组定义、任务路由。
+
+    TOML 示例:
+      [yuying_chameleon.llm]
+
+      [yuying_chameleon.llm.policy]
+      per_model_attempts = 1
+      total_attempts_cap = 5
+
+      [yuying_chameleon.llm.main]
+      model = "gpt-4-turbo"
+
+      [yuying_chameleon.llm.cheap]
+      models = ["gpt-3.5-turbo", "deepseek-chat"]
+
+      [yuying_chameleon.llm.tasks]
+      action_planner = "main"
+      memory_extraction = "cheap"
+    """
+
+    policy: LLMPolicyConfig = Field(default_factory=LLMPolicyConfig, alias="policy")
+    # 全局策略配置
+
+    main: Optional[LLMModelGroupConfig] = Field(default=None, alias="main")
+    # 主模型组（用于核心任务）
+
+    cheap: Optional[LLMModelGroupConfig] = Field(default=None, alias="cheap")
+    # 便宜模型组（用于轻量级任务）
+
+    nano: Optional[LLMModelGroupConfig] = Field(default=None, alias="nano")
+    # Nano 模型组（用于快速决策）
+
+    vision: Optional[LLMModelGroupConfig] = Field(default=None, alias="vision")
+    # 视觉模型组（用于图片理解）
+
+    tasks: LLMTasksConfig = Field(default_factory=LLMTasksConfig, alias="tasks")
+    # 任务级别路由配置
 
     class Config:
         extra = Extra.ignore
@@ -855,6 +1193,37 @@ class Config(BaseModel):
     # - 默认值：2000
     # - 超过限制会截断并标记 truncated=true
 
+    # ==================== LLM 模型组与任务路由配置 ====================
+    #
+    # 说明：
+    # - 此配置为高级功能，支持模型组（多模型 fallback）和任务级别模型选择
+    # - 不配置此段时，将使用上方的旧配置（openai_*, cheap_llm_*, nano_llm_*）
+    # - 配置此段后，可实现：
+    #   1. 模型组：配置多个模型，失败时自动切换下一个
+    #   2. 任务路由：不同任务使用不同模型（如摘要用便宜模型，对话用高级模型）
+    #   3. 向下兼容：未配置的组/任务仍使用旧配置
+
+    yuying_llm: Optional[LLMConfig] = Field(default=None, alias="llm")
+    # LLM 模型组与任务路由配置
+    # - 作用: 统一管理所有 LLM 使用，支持模型组 fallback 和任务级路由
+    # - 默认值: None (使用旧配置 openai_*/cheap_llm_*/nano_llm_*)
+    # - 配置后: 优先使用新配置，旧配置作为降级备份
+    #
+    # TOML 示例:
+    #   [yuying_chameleon.llm.policy]
+    #   per_model_attempts = 1
+    #   total_attempts_cap = 5
+    #
+    #   [yuying_chameleon.llm.main]
+    #   model = "gpt-4-turbo"
+    #
+    #   [yuying_chameleon.llm.cheap]
+    #   models = ["gpt-3.5-turbo", "deepseek-chat"]
+    #
+    #   [yuying_chameleon.llm.tasks]
+    #   action_planner = "main"
+    #   memory_extraction = "cheap"
+
     @root_validator(pre=True)
     def _mcp_key_compat(cls, values: Any) -> Any:
         """兼容早期/简写 MCP 配置键，避免被 Extra.ignore 吞掉。
@@ -1035,6 +1404,120 @@ def load_config() -> Config:
     # 步骤4: 使用Pydantic解析并验证配置
     # Config.parse_obj(): 从字典创建Config对象,自动进行类型检查和转换
     cfg = Config.parse_obj(raw)
+
+    # 步骤4.5: 从新格式 yuying_llm 填充旧字段(向下兼容)
+    # 说明: 如果配置了新格式 [yuying_chameleon.llm]，从中提取第一个模型的配置
+    #       填充到旧字段(yuying_openai_*, yuying_cheap_llm_*, yuying_nano_llm_*)
+    #       这样既支持新配置,又保证旧代码(如日志输出)仍能正常工作
+    if cfg.yuying_llm and isinstance(cfg.yuying_llm, LLMConfig):
+        # 处理 main 模型组
+        if cfg.yuying_llm.main:
+            main_group = cfg.yuying_llm.main
+            # 提取第一个模型的配置
+            first_model = None
+            first_base_url = None
+            first_api_key = None
+            first_timeout = None
+
+            # 方式1: 单模型
+            if main_group.model and isinstance(main_group.model, str):
+                first_model = main_group.model
+                first_base_url = main_group.base_url
+                first_api_key = main_group.api_key
+                first_timeout = main_group.timeout
+            # 方式2/3/4: 模型数组(已被 @root_validator 展开为 LLMModelConfig 列表)
+            elif main_group.models and isinstance(main_group.models, list) and len(main_group.models) > 0:
+                first_item = main_group.models[0]
+                if isinstance(first_item, LLMModelConfig):
+                    first_model = first_item.model
+                    first_base_url = first_item.base_url
+                    first_api_key = first_item.api_key
+                    first_timeout = first_item.timeout
+                elif isinstance(first_item, str):
+                    first_model = first_item
+                    first_base_url = main_group.base_url
+                    first_api_key = main_group.api_key
+                    first_timeout = main_group.timeout
+
+            # 填充旧字段(无条件覆盖，因为新格式优先级更高)
+            if first_model:
+                cfg.yuying_openai_model = first_model
+            if first_base_url:
+                cfg.yuying_openai_base_url = first_base_url
+            if first_api_key:
+                cfg.yuying_openai_api_key = first_api_key
+            if first_timeout is not None:
+                cfg.yuying_openai_timeout = first_timeout
+
+        # 处理 cheap 模型组
+        if cfg.yuying_llm.cheap:
+            cheap_group = cfg.yuying_llm.cheap
+            first_model = None
+            first_base_url = None
+            first_api_key = None
+            first_timeout = None
+
+            if cheap_group.model and isinstance(cheap_group.model, str):
+                first_model = cheap_group.model
+                first_base_url = cheap_group.base_url
+                first_api_key = cheap_group.api_key
+                first_timeout = cheap_group.timeout
+            elif cheap_group.models and isinstance(cheap_group.models, list) and len(cheap_group.models) > 0:
+                first_item = cheap_group.models[0]
+                if isinstance(first_item, LLMModelConfig):
+                    first_model = first_item.model
+                    first_base_url = first_item.base_url
+                    first_api_key = first_item.api_key
+                    first_timeout = first_item.timeout
+                elif isinstance(first_item, str):
+                    first_model = first_item
+                    first_base_url = cheap_group.base_url
+                    first_api_key = cheap_group.api_key
+                    first_timeout = cheap_group.timeout
+
+            if first_model:
+                cfg.yuying_cheap_llm_model = first_model
+            if first_base_url:
+                cfg.yuying_cheap_llm_base_url = first_base_url
+            if first_api_key:
+                cfg.yuying_cheap_llm_api_key = first_api_key
+            if first_timeout is not None:
+                cfg.yuying_cheap_llm_timeout = first_timeout
+
+        # 处理 nano 模型组
+        if cfg.yuying_llm.nano:
+            nano_group = cfg.yuying_llm.nano
+            first_model = None
+            first_base_url = None
+            first_api_key = None
+            first_timeout = None
+
+            if nano_group.model and isinstance(nano_group.model, str):
+                first_model = nano_group.model
+                first_base_url = nano_group.base_url
+                first_api_key = nano_group.api_key
+                first_timeout = nano_group.timeout
+            elif nano_group.models and isinstance(nano_group.models, list) and len(nano_group.models) > 0:
+                first_item = nano_group.models[0]
+                if isinstance(first_item, LLMModelConfig):
+                    first_model = first_item.model
+                    first_base_url = first_item.base_url
+                    first_api_key = first_item.api_key
+                    first_timeout = first_item.timeout
+                elif isinstance(first_item, str):
+                    first_model = first_item
+                    first_base_url = nano_group.base_url
+                    first_api_key = nano_group.api_key
+                    first_timeout = nano_group.timeout
+
+            if first_model:
+                cfg.yuying_nano_llm_model = first_model
+            if first_base_url:
+                cfg.yuying_nano_llm_base_url = first_base_url
+            if first_api_key:
+                cfg.yuying_nano_llm_api_key = first_api_key
+            if first_timeout is not None:
+                cfg.yuying_nano_llm_timeout = first_timeout
 
     # 步骤5: 处理provider配置
     def _normalize_provider(value: str) -> str:

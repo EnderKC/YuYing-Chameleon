@@ -21,6 +21,7 @@ from ..llm.client import ChatCompletionResult, main_llm
 from ..llm.mcp_manager import mcp_manager
 from ..storage.models import Memory
 from ..tools.internal_tools_manager import internal_tools_manager
+from src.plugins.yuying_chameleon.personality.retriever import PersonalityRetriever
 
 
 class ActionPlanner:
@@ -324,6 +325,17 @@ class ActionPlanner:
             reply_to_message=reply_to_message,
         )
         system_prompt = ActionPlanner._load_system_prompt()
+        try:
+            personality_block = await PersonalityRetriever.render_system_injection(
+                context_scene_type=context_scene_type,
+                context_scene_id=context_scene_id,
+            )
+            if personality_block:
+                system_prompt = f"{system_prompt}\n\n{personality_block}"
+        except Exception as exc:
+            # fail-open：注入失败不影响主流程
+            logger.debug(f"注入人格记忆失败（将继续）：{exc}")
+
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
         # 多模态输入：将文本 prompt 与图片 url 合并到同一个 user message 的 content 数组里

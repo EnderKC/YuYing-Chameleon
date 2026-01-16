@@ -34,7 +34,7 @@ from __future__ import annotations
 from typing import Optional
 
 # SQLAlchemy类型导入
-from sqlalchemy import String, Integer, Text, Boolean, Float, Index
+from sqlalchemy import String, Integer, Text, Boolean, Float, Index, UniqueConstraint
 # - String: 可变长度字符串(VARCHAR)
 # - Integer: 整数类型(INT)
 # - Text: 长文本类型(TEXT),无长度限制
@@ -391,6 +391,109 @@ class Summary(Base):
         #   ORDER BY window_end_ts DESC
         #   LIMIT 5
         # - 性能: 覆盖索引,查询效率高
+    )
+
+class BotPersonalityMemory(Base):
+    """机器人"人格记忆"表 - 两层架构(recent/core)的自我反思产物
+
+    目标：
+    - recent：最近 7 天的观察（每日 04:00 反思生成），用于短期风格/情绪调节
+    - core：长期原则（由 recent 浓缩而来），永久保留但允许被"更新"（同一条原则覆盖更新）
+
+    设计原则（关键约束）：
+    - 只记录"沟通方式建议/自我调节策略"，避免对用户做人身评价或负面标签
+    - 情绪影响必须可衰减：decay_weight + decay_half_life_hours
+
+    索引/唯一性说明：
+    - SQLite 的 UNIQUE + NULL 存在"允许重复"的语义坑；
+      因此 scope_id 设计为非空字符串：global 场景用空字符串 ""，避免幂等失效。
+    """
+
+    __tablename__ = "bot_personality_memories"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # ==================== 维度字段（两层 + 类型 + scope） ====================
+    tier: Mapped[str] = mapped_column(String)
+    # recent / core
+
+    memory_type: Mapped[str] = mapped_column(String)
+    # group_activity / relationship / emotion_state
+
+    scope_type: Mapped[str] = mapped_column(String)
+    # global / group
+
+    scope_id: Mapped[str] = mapped_column(String, default="")
+    # global: ""（空字符串）
+    # group: 群号（scene_id）
+
+    memory_key: Mapped[str] = mapped_column(String)
+    # recent: "YYYY-MM-DD"（按天幂等）
+    # core: 固定为 "core"（每个 scope+type 只有一条长期原则，按日覆盖更新）
+
+    # ==================== 时间窗口（统一使用 Unix 秒级） ====================
+    memory_date: Mapped[str] = mapped_column(String)
+    # "YYYY-MM-DD"（core 表示最近一次更新的日期）
+
+    window_start_ts: Mapped[int] = mapped_column(Integer)
+    window_end_ts: Mapped[int] = mapped_column(Integer)
+
+    # ==================== 内容字段 ====================
+    title: Mapped[str] = mapped_column(String)
+    content: Mapped[str] = mapped_column(Text)
+    action_hint: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    confidence: Mapped[float] = mapped_column(Float, default=0.5)
+    importance: Mapped[float] = mapped_column(Float, default=0.5)
+
+    # ==================== 情绪字段（仅 emotion_state 使用，其余可为空） ====================
+    emotion_label: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # happy / neutral / unhappy
+
+    emotion_valence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # [-1, 1]
+
+    decay_weight: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # [0, 1]：昨日情绪影响的"初始强度"（运行时再按半衰期计算有效权重）
+
+    decay_half_life_hours: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # 建议默认 24
+
+    # ==================== 证据与审计 ====================
+    evidence_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # JSON 字符串：必须包含 summary_ids + stats；允许 top_qq_ids 但只能用于证据，不得输出对人的评判
+
+    run_id: Mapped[str] = mapped_column(String)
+    model: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    prompt_version: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    created_at_ts: Mapped[int] = mapped_column(Integer, default=lambda: int(time.time()))
+    updated_at_ts: Mapped[int] = mapped_column(
+        Integer,
+        default=lambda: int(time.time()),
+        onupdate=lambda: int(time.time()),
+    )
+    deleted_at_ts: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tier",
+            "scope_type",
+            "scope_id",
+            "memory_type",
+            "memory_key",
+            name="uq_bot_personality_key",
+        ),
+        Index(
+            "idx_bpm_lookup",
+            "tier",
+            "scope_type",
+            "scope_id",
+            "memory_type",
+            "updated_at_ts",
+        ),
+        Index("idx_bpm_tier_window_end", "tier", "window_end_ts"),
+        Index("idx_bpm_tier_type_updated", "tier", "memory_type", "updated_at_ts"),
     )
 
 class Memory(Base):

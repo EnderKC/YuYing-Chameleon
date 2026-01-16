@@ -28,7 +28,6 @@ from .policy.gatekeeper import Gatekeeper
 from .retrieval.retriever import Retriever
 from .scheduler.jobs import init_scheduler
 from .storage.db_writer import db_writer
-from .storage.migrations_runner import run_migrations
 from .storage.models import IndexJob, RawMessage
 from .storage.repositories.index_jobs_repo import IndexJobRepository
 from .storage.repositories.media_cache_repo import MediaCacheRepository
@@ -418,16 +417,12 @@ async def _try_caption_and_ocr(
 async def startup() -> None:
     """NoneBot 启动时执行：初始化依赖并启动后台任务。"""
 
-    # 1) 初始化数据库表（优先 migrations，失败再兜底 create_all）
+    # 1) 初始化数据库表（直接 create_all）
     try:
-        try:
-            await run_migrations()
-        except Exception as exc:
-            logger.warning(f"执行 migrations 失败，将回退为 create_all：{exc}")
-            async with engine.begin() as conn:
-                from .storage.models import Base
+        async with engine.begin() as conn:
+            from .storage.models import Base
 
-                await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(Base.metadata.create_all)
     except Exception as exc:
         logger.error(f"初始化数据库失败：{exc}")
         raise
@@ -872,4 +867,3 @@ async def handle_message(bot: Bot, event: Event) -> None:
 
     # 防抖未启用，直接处理
     await _process_normalized(bot, normalized)
-

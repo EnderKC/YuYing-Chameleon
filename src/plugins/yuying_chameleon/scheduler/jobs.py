@@ -6,6 +6,7 @@ from nonebot import require
 require("nonebot_plugin_apscheduler")
 from nonebot_plugin_apscheduler import scheduler
 from ..memory.condenser import MemoryCondenser
+from src.plugins.yuying_chameleon.personality.reflection_service import PersonalityReflectionService
 from ..config import plugin_config
 
 _inited = False
@@ -25,6 +26,18 @@ def init_scheduler() -> None:
         hour=plugin_config.yuying_memory_condense_hour,
         minute=0,
         id="daily_memory_condenser",
+        replace_existing=True,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+
+    # 每日 04:00 人格反思（recent + core 更新）
+    scheduler.add_job(
+        PersonalityReflectionService.run_daily_reflection,
+        "cron",
+        hour=4,
+        minute=0,
+        id="daily_personality_reflection",
         replace_existing=True,
         coalesce=True,
         misfire_grace_time=3600,
