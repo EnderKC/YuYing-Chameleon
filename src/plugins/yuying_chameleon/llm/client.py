@@ -453,13 +453,11 @@ class LLMClientPool:
 
     Fallback 触发条件:
     - 网络错误 (ConnectionError, TimeoutError)
-    - HTTP 5xx 错误 (服务端错误)
+    - HTTP 4xx/5xx 错误 (含 400/429 等)
     - LLM 返回空内容且无 tool_calls (treat_empty_as_failure=True时)
     - 超时错误
 
     不触发 Fallback (直接失败):
-    - HTTP 401/403 (认证错误，换模型也解决不了)
-    - HTTP 400 (参数错误，换模型也解决不了)
     - asyncio.CancelledError (任务被取消)
 
     重试策略:
@@ -522,19 +520,11 @@ class LLMClientPool:
             if isinstance(exc, openai.APIStatusError):
                 status_code = getattr(exc, "status_code", None)
                 if status_code:
-                    # 401/403: 认证错误
-                    # 在多供应商场景下，每个供应商有独立的 API key，应该尝试下一个
-                    # 注意：如果是配置错误（所有 key 都无效），最多多尝试几次，不会造成严重问题
-                    if status_code in {401, 403}:
-                        return True  # 允许 fallback 到下一个供应商
-                    # 400: 参数错误，换模型也没用
-                    if status_code == 400:
-                        return False
-                    # 429: 触发限流/配额不足，尝试切换下一个模型/供应商
-                    if status_code == 429:
-                        return True
-                    # 5xx: 服务端错误，可能换模型能解决
-                    if 500 <= status_code < 600:
+                    # 策略：只要不是“成功返回”，都视为失败并尝试模型组回落。
+                    # - 4xx（含 400/401/403/404/429 等）：可能是该供应商/模型/网关不兼容或被限流
+                    # - 5xx：服务端错误
+                    # 注意：对“请求参数确实有问题”的 400，这会导致多试几次，但符合“尽力回落”的诉求。
+                    if 400 <= int(status_code) < 600:
                         return True
         except Exception:
             pass
