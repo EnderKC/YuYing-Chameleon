@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from nonebot import logger
 
 from ..config import plugin_config
-from ..llm.client import ChatCompletionResult, main_llm
+from ..llm.client import ChatCompletionResult, get_task_llm
 from ..llm.mcp_manager import mcp_manager
 from ..storage.models import Memory
 from ..tools.internal_tools_manager import internal_tools_manager
@@ -66,6 +66,7 @@ class ActionPlanner:
         Returns:
             Optional[str]: 最终的文本回复，或 None（表示工具循环失败）
         """
+        llm = get_task_llm("action_planner")
         result = first_result
         tool_call_count = 0
         last_fingerprints: List[str] = []  # 用于检测连续重复调用
@@ -183,7 +184,7 @@ class ActionPlanner:
 
             # 继续下一轮 LLM 调用
             try:
-                result = await main_llm.chat_completion(
+                result = await llm.chat_completion(
                     messages,
                     temperature=0.7,
                     tools=tools,
@@ -196,7 +197,7 @@ class ActionPlanner:
                 # fail-open：尽力回退到无 tools 的常规调用，避免工具链路影响主流程
                 if getattr(plugin_config, "yuying_mcp_fail_open", True):
                     try:
-                        fallback = await main_llm.chat_completion(messages, temperature=0.7)
+                        fallback = await llm.chat_completion(messages, temperature=0.7)
                         return fallback if isinstance(fallback, str) else None
                     except asyncio.CancelledError:
                         raise
@@ -386,10 +387,11 @@ class ActionPlanner:
         # 3) 如果没有工具，设为 None（传统路径）
         tools: Optional[List[Dict[str, Any]]] = tools_list or None
 
+        llm = get_task_llm("action_planner")
         if tools:
             # 工具可用：调用 LLM 并启用 tools
             try:
-                result = await main_llm.chat_completion(
+                result = await llm.chat_completion(
                     messages,
                     temperature=0.7,
                     tools=tools,
@@ -424,12 +426,12 @@ class ActionPlanner:
                 logger.error(f"MCP 模式下 LLM 调用失败：{exc}")
                 # fail-open：回退为无 tools 的常规调用
                 if getattr(plugin_config, "yuying_mcp_fail_open", True):
-                    content = await main_llm.chat_completion(messages, temperature=0.7)
+                    content = await llm.chat_completion(messages, temperature=0.7)
                 else:
                     raise
         else:
             # 工具不可用或 MCP 未启用：传统调用（向后兼容）
-            content = await main_llm.chat_completion(messages, temperature=0.7)
+            content = await llm.chat_completion(messages, temperature=0.7)
 
         actions = ActionPlanner._parse_actions(content)
         if actions:

@@ -10,7 +10,8 @@ from typing import Any, Dict, Optional
 
 from nonebot import logger
 
-from ..llm.client import cheap_llm
+from ..config import plugin_config
+from ..llm.client import get_task_llm
 from ..llm.vision import VisionHelper  # 新增：生成 data URL
 from ..storage.models import IndexJob
 from ..storage.db_writer import db_writer
@@ -41,8 +42,20 @@ class StickerWorker:
                     await asyncio.sleep(10)
                     continue
 
-                for job in jobs:
-                    await self._process_job(job)
+                max_conc = int(getattr(plugin_config, "yuying_sticker_worker_max_concurrency", 1) or 1)
+                max_conc = max(1, min(16, max_conc))
+
+                if max_conc <= 1 or len(jobs) <= 1:
+                    for job in jobs:
+                        await self._process_job(job)
+                else:
+                    sem = asyncio.Semaphore(max_conc)
+
+                    async def _run_one(j: IndexJob) -> None:
+                        async with sem:
+                            await self._process_job(j)
+
+                    await asyncio.gather(*(_run_one(j) for j in jobs))
             except Exception as exc:
                 logger.error(f"StickerWorker 循环异常：{exc}")
                 await asyncio.sleep(10)
@@ -124,7 +137,8 @@ class StickerWorker:
                 },
             ]
 
-            content = await cheap_llm.chat_completion(messages, temperature=0.2)
+            llm = get_task_llm("sticker_tagging")
+            content = await llm.chat_completion(messages, temperature=0.2)
             if not content:
                 await db_writer.submit_and_wait(
                     AsyncCallableJob(IndexJobRepository.update_status, args=(job.job_id, "failed")),

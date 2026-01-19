@@ -210,6 +210,10 @@ class LLMClient:
                     continue
                 cleaned[ks] = vs
             if cleaned:
+                # 只记录 header 名称（不记录值，避免泄露敏感信息）
+                logger.debug(
+                    f"LLMClient default_headers enabled: model={model}, keys={sorted(cleaned.keys())}"
+                )
                 kwargs["default_headers"] = cleaned
 
         # ==================== 步骤4: 创建客户端实例并保存配置 ====================
@@ -231,6 +235,7 @@ class LLMClient:
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
         return_result: Literal[False] = False,
+        raise_on_error: bool = False,
     ) -> Optional[str]: ...
 
     @overload
@@ -242,6 +247,7 @@ class LLMClient:
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
         return_result: Literal[True],
+        raise_on_error: bool = False,
     ) -> Optional[ChatCompletionResult]: ...
 
     async def chat_completion(
@@ -252,6 +258,7 @@ class LLMClient:
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
         return_result: bool = False,
+        raise_on_error: bool = False,
     ) -> Union[Optional[str], Optional[ChatCompletionResult]]:
         """执行一次Chat Completions请求(对话生成)
 
@@ -428,6 +435,9 @@ class LLMClient:
             # logger.error(): 记录错误日志,f-string格式化
             logger.error(f"LLM 调用失败:{e}")
 
+            if raise_on_error:
+                raise
+
             # 返回None表示调用失败
             return None
 
@@ -520,6 +530,9 @@ class LLMClientPool:
                     # 400: 参数错误，换模型也没用
                     if status_code == 400:
                         return False
+                    # 429: 触发限流/配额不足，尝试切换下一个模型/供应商
+                    if status_code == 429:
+                        return True
                     # 5xx: 服务端错误，可能换模型能解决
                     if 500 <= status_code < 600:
                         return True
@@ -626,6 +639,7 @@ class LLMClientPool:
                         tools=tools,
                         tool_choice=tool_choice,
                         return_result=return_result,
+                        raise_on_error=True,
                     )
 
                     # 成功获取结果
@@ -1012,4 +1026,3 @@ def get_task_llm(
         # 未知任务，默认使用 main_llm
         logger.warning(f"未知任务名: {task_name}，使用 main_llm")
         return main_llm
-

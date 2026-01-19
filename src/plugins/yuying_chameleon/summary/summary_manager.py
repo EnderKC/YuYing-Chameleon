@@ -71,7 +71,7 @@ from typing import Optional  # 类型提示
 
 # 导入项目模块
 from ..config import plugin_config  # 插件配置
-from ..llm.client import main_llm  # 主LLM客户端
+from ..llm.client import get_task_llm  # 支持模型组回落
 from ..storage.models import IndexJob, Summary  # 数据库模型
 from ..storage.db_writer import db_writer  # 数据库写入队列
 from ..storage.write_jobs import AddIndexJobJob, AsyncCallableJob  # 写入任务
@@ -420,7 +420,8 @@ class SummaryManager:
         # - temperature=0.2: 低温度,生成确定性输出
         #   * 0.2比默认0.7更低,适合摘要任务
         #   * 确保输出格式稳定
-        content = await main_llm.chat_completion(
+        llm = get_task_llm("summary_generation")
+        content = await llm.chat_completion(
             [
                 # 系统提示
                 {"role": "system", "content": "你是一个摘要生成器，根据用户提供的格式和聊天记录生成对应格式的摘要，其余什么都不要输出。输出示例：话题:讨论天气和出行计划\n关键事实:用户认为天气好适合出去玩\n结论:决定去公园\n未解问题:具体时间未定\n下一步:确定出发时间"},

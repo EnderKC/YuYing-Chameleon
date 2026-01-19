@@ -34,7 +34,7 @@ from typing import Any, Optional
 
 from nonebot import logger
 
-from .client import nano_llm
+from .client import get_task_llm
 
 
 # ==================== 默认系统提示词 ====================
@@ -304,7 +304,8 @@ async def nano_should_reply_yes_no(
     # - 0.2 较低但允许一定变化，适合 yes/no 决策
     # - 避免完全确定性（0.0）可能导致的过于机械化
     logger.debug(f"心流模式 nano 模型调用（images={len(image_inputs or [])}）")
-    reply = await nano_llm.chat_completion(messages, temperature=0.2)
+    llm = get_task_llm("flow_decider")
+    reply = await llm.chat_completion(messages, temperature=0.2)
 
     # ==================== 步骤4: 解析输出 ====================
 

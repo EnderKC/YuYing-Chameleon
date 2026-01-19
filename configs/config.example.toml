@@ -23,6 +23,14 @@ qdrant_port = 6333
 qdrant_api_key = ""       # 可选
 qdrant_https = false      # 可选：本地一般为 false，Qdrant Cloud 一般为 true
 qdrant_recreate_collections = false  # 可选：维度变化时自动删除并重建（有数据丢失风险）
+
+# 索引后台任务并发（向量化 + 写入 Qdrant）
+# - 默认 1（串行最稳）；并发过高可能触发 embedding/Qdrant 限流
+index_worker_max_concurrency = 1
+
+# 表情包打标签后台任务并发（LLM + 图片）
+# - 默认 1（串行最稳）；并发过高可能触发 LLM 限流
+sticker_worker_max_concurrency = 1
 retrieval_topk = 5
 retrieval_snippet_max_chars = 120
 hybrid_query_recent_messages_limit = 30      # Hybrid Query 读取场景最近消息条数

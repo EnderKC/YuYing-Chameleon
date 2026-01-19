@@ -80,7 +80,7 @@ from nonebot import logger  # NoneBot日志记录器
 
 # 导入项目模块
 from ..config import plugin_config  # 插件配置
-from ..llm.client import main_llm  # 主LLM客户端
+from ..llm.client import get_task_llm  # 支持模型组回落
 from ..storage.models import IndexJob, Memory  # 数据库模型
 from ..storage.db_writer import db_writer  # 数据库写入队列
 from ..storage.write_jobs import AddIndexJobJob, AsyncCallableJob  # 写入任务
@@ -516,7 +516,8 @@ class MemoryCondenser:
         # - temperature=0.2: 低温度,生成确定性输出
         #   * 0.2比默认0.7更低,适合结构化任务
         #   * 确保输出格式稳定,避免随机性
-        content = await main_llm.chat_completion(
+        llm = get_task_llm("memory_condenser")
+        content = await llm.chat_completion(
             [
                 # 系统提示
                 {"role": "system", "content": "你是记忆凝练器,只能输出 JSON。"},
@@ -715,7 +716,8 @@ class MemoryCondenser:
 
         # await main_llm.chat_completion(): 调用主LLM
         # temperature=0.2: 低温度,确定性输出
-        content = await main_llm.chat_completion(
+        llm = get_task_llm("memory_condenser")
+        content = await llm.chat_completion(
             [
                 # 系统提示
                 {"role": "system", "content": "你是记忆合并器,只能输出 JSON。"},

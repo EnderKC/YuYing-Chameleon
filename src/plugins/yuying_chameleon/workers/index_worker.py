@@ -11,6 +11,7 @@ import httpx
 from nonebot import logger
 from qdrant_client.http.exceptions import UnexpectedResponse
 
+from ..config import plugin_config
 from ..storage.models import IndexJob
 from ..storage.repositories.index_jobs_repo import IndexJobRepository
 from ..storage.repositories.memory_repo import MemoryRepository
@@ -100,8 +101,20 @@ class IndexWorker:
                     await asyncio.sleep(3)
                     continue
 
-                for job in jobs:
-                    await self._process_job(job)
+                max_conc = int(getattr(plugin_config, "yuying_index_worker_max_concurrency", 1) or 1)
+                max_conc = max(1, min(32, max_conc))
+
+                if max_conc <= 1 or len(jobs) <= 1:
+                    for job in jobs:
+                        await self._process_job(job)
+                else:
+                    sem = asyncio.Semaphore(max_conc)
+
+                    async def _run_one(j: IndexJob) -> None:
+                        async with sem:
+                            await self._process_job(j)
+
+                    await asyncio.gather(*(_run_one(j) for j in jobs))
             except Exception as exc:
                 logger.error(f"IndexWorker 循环异常：{exc}")
                 await asyncio.sleep(3)

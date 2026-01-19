@@ -412,23 +412,19 @@ async def _try_caption_and_ocr(
     - 不保证成功，失败返回空字符串。
     """
 
-    async def _cap() -> str:
-        return await VisionHelper.caption_image(file_path, url=url)
-
-    async def _ocr() -> str:
-        return await VisionHelper.ocr_image(file_path, url=url)
-
     try:
-        caption_task = asyncio.create_task(_cap())
-        ocr_task = asyncio.create_task(_ocr())
-        done, pending = await asyncio.wait(
-            {caption_task, ocr_task},
-            timeout=max_wait_seconds,
-        )
-        for t in pending:
-            t.cancel()
-        caption = caption_task.result() if caption_task in done else ""
-        ocr_text = ocr_task.result() if ocr_task in done else ""
+        enable_ocr = bool(getattr(plugin_config, "yuying_media_enable_ocr", False))
+        if enable_ocr:
+            caption, ocr_text = await asyncio.wait_for(
+                VisionHelper.caption_and_ocr_image(file_path, url=url),
+                timeout=max_wait_seconds,
+            )
+        else:
+            caption = await asyncio.wait_for(
+                VisionHelper.caption_image(file_path, url=url),
+                timeout=max_wait_seconds,
+            )
+            ocr_text = ""
         logger.debug(f"图片说明/OCR 结果：{caption} / {ocr_text}")
         return (caption or "").strip(), (ocr_text or "").strip()
     except Exception as exc:

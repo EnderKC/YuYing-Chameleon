@@ -51,12 +51,14 @@ text = await VisionHelper.ocr_image(file_path="/path/to/meme.png")
 from __future__ import annotations
 
 import base64  # Python标准库,用于base64编码
+import json
+import re
 from pathlib import Path  # 文件路径处理
-from typing import Optional  # 类型提示
+from typing import Optional, Tuple  # 类型提示
 
 from nonebot import logger  # NoneBot日志记录器
 
-from .client import vision_llm  # 导入图片任务客户端(复用cheap_llm)
+from .client import get_task_llm  # 支持模型组回落
 
 
 class VisionHelper:
@@ -155,6 +157,25 @@ class VisionHelper:
         return f"data:{mime};base64,{b64}"
 
     @staticmethod
+    def _extract_first_json_object(text: str) -> Optional[dict[str, object]]:
+        """从输出中尽力提取第一个 JSON object。"""
+
+        raw = (text or "").strip()
+        if not raw:
+            return None
+
+        # 去除常见代码块包裹
+        raw = raw.strip("` \n\r\t")
+        m = re.search(r"(\{.*\})", raw, flags=re.S)
+        if not m:
+            return None
+        try:
+            obj = json.loads(m.group(1))
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            return None
+
+    @staticmethod
     def to_data_url(image_bytes: bytes, suffix: str) -> str:
         """公开的 data URL 工具方法（供 embedding 等模块复用）
 
@@ -189,6 +210,56 @@ class VisionHelper:
             >>> # 可用于 embedding API 的图片输入
         """
         return VisionHelper._to_data_url(image_bytes, suffix)
+
+    @staticmethod
+    async def caption_and_ocr_image(
+        file_path: Optional[str] = None,
+        *,
+        url: Optional[str] = None,
+    ) -> Tuple[str, str]:
+        """一次调用同时生成图片说明与轻量 OCR（节省 token/请求次数）。"""
+
+        image_url = (url or "").strip() or None
+
+        if not image_url:
+            try:
+                p = Path(str(file_path))
+                image_url = VisionHelper._to_data_url(p.read_bytes(), p.suffix)
+            except Exception as exc:
+                logger.warning(f"读取图片失败，无法生成说明/OCR：{exc}")
+                return "", ""
+
+        messages = [
+            {"role": "system", "content": "你是图片分析器，只能输出严格 JSON。"},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "\n".join(
+                            [
+                                "请分析这张图片，并只输出严格 JSON：",
+                                '{"caption":"<=20字中文说明","ocr_text":"图片中的文字(没有则空字符串)"}',
+                                "要求：",
+                                "- caption：<=20 字，中文，客观简短；",
+                                "- ocr_text：只输出图片中文字，不解释不翻译；没有文字则输出空字符串；",
+                            ]
+                        ),
+                    },
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+            },
+        ]
+
+        llm = get_task_llm("vision_ocr")
+        content = await llm.chat_completion(messages, temperature=0.2)
+        data = VisionHelper._extract_first_json_object(str(content or ""))
+        if not isinstance(data, dict):
+            return "", ""
+
+        caption = str(data.get("caption") or "").strip()
+        ocr_text = str(data.get("ocr_text") or "").strip()
+        return caption[:20], ocr_text[:200]
 
     @staticmethod
     async def caption_image(file_path: Optional[str] = None, *, url: Optional[str] = None) -> str:
@@ -299,7 +370,8 @@ class VisionHelper:
         # - temperature=0.2: 低温度,生成更确定性的描述
         #   * 0.2比默认0.7更低,适合描述性任务
         #   * 避免过于创意的描述,保持客观
-        content = await vision_llm.chat_completion(messages, temperature=0.2)
+        llm = get_task_llm("vision_caption")
+        content = await llm.chat_completion(messages, temperature=0.2)
 
         # ==================== 步骤4: 处理返回结果 ====================
 
@@ -406,7 +478,8 @@ class VisionHelper:
 
         # temperature=0.2: 低温度,生成确定性的识别结果
         # - OCR任务需要准确识别,不需要创造性
-        content = await vision_llm.chat_completion(messages, temperature=0.2)
+        llm = get_task_llm("vision_ocr")
+        content = await llm.chat_completion(messages, temperature=0.2)
 
         # ==================== 步骤4: 处理返回结果 ====================
 

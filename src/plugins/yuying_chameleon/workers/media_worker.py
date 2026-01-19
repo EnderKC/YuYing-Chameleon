@@ -63,18 +63,19 @@ class MediaWorker:
 
             local_path = self._maybe_local_file(file_path)
 
-            # 先尝试用 url（通常更小、更兼容）；失败再回退本地文件
-            caption = await VisionHelper.caption_image(local_path, url=url)
-            if not caption and url and not local_path:
-                local_path = await self._download_to_tmp(media_key, url=url)
-                caption = await VisionHelper.caption_image(local_path, url=None)
-
-            ocr_text = ""
             if bool(getattr(plugin_config, "yuying_media_enable_ocr", False)):
-                ocr_text = await VisionHelper.ocr_image(local_path, url=url)
-                if not ocr_text and url and not local_path:
+                # 单次调用同时生成 caption + OCR（更省 token）
+                caption, ocr_text = await VisionHelper.caption_and_ocr_image(local_path, url=url)
+                if not caption and url and not local_path:
                     local_path = await self._download_to_tmp(media_key, url=url)
-                    ocr_text = await VisionHelper.ocr_image(local_path, url=None)
+                    caption, ocr_text = await VisionHelper.caption_and_ocr_image(local_path, url=None)
+            else:
+                # 仅 caption：先尝试用 url（通常更小、更兼容）；失败再回退本地文件
+                caption = await VisionHelper.caption_image(local_path, url=url)
+                if not caption and url and not local_path:
+                    local_path = await self._download_to_tmp(media_key, url=url)
+                    caption = await VisionHelper.caption_image(local_path, url=None)
+                ocr_text = ""
 
             if not caption:
                 caption = "图片"

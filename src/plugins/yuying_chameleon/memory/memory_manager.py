@@ -99,7 +99,7 @@ from nonebot import logger  # NoneBot日志记录器
 
 # 导入项目模块
 from ..config import plugin_config  # 插件配置
-from ..llm.client import main_llm  # 主LLM客户端
+from ..llm.client import get_task_llm  # 支持模型组回落
 from ..storage.models import IndexJob  # 索引任务模型
 from ..storage.models import Memory  # 记忆模型
 from ..storage.repositories.memory_repo import MemoryRepository  # 记忆仓库
@@ -1038,7 +1038,8 @@ class MemoryManager:
         # - temperature=0.2: 低温度,生成确定性输出
         #   * 0.2比默认0.7更低,适合结构化任务
         #   * 确保输出格式稳定,避免随机性
-        content = await main_llm.chat_completion(
+        llm = get_task_llm("memory_extraction")
+        content = await llm.chat_completion(
             [
                 # 系统提示
                 {"role": "system", "content": "你是记忆抽取器,只能输出 JSON。"},

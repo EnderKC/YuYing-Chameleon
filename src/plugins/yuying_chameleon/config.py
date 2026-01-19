@@ -558,6 +558,26 @@ class Config(BaseModel):
     # - 作用: 控制启动时是否删除并重建向量库的集合
     # - 默认值: False (保留现有数据)
     # - True: 每次启动都清空向量库(用于开发调试)
+
+    # ==================== 后台任务并发配置 ====================
+
+    yuying_index_worker_max_concurrency: int = Field(
+        default=1,
+        alias="index_worker_max_concurrency",
+    )
+    # 索引向量化后台任务并发度
+    # - 作用: IndexWorker 同时处理多少条 index_jobs（向量化 + 写入 Qdrant）
+    # - 默认值: 1（串行，最稳）
+    # - 建议: 2~6（取决于 embedding/Qdrant 的限流与机器带宽）
+
+    yuying_sticker_worker_max_concurrency: int = Field(
+        default=1,
+        alias="sticker_worker_max_concurrency",
+    )
+    # 表情包打标签后台任务并发度（LLM + 图片）
+    # - 作用: StickerWorker 同时处理多少条 sticker_tag 任务
+    # - 默认值: 1（串行，最稳）
+    # - 建议: 2~4（取决于 LLM 限流与网络）
     # - 警告: 设为True会丢失所有向量数据!
 
     yuying_retrieval_topk: int = Field(default=5, alias="retrieval_topk")
