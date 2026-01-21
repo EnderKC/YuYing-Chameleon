@@ -247,6 +247,14 @@ class RawMessage(Base):
     #   * 多图消息: JSON格式存储多个URL
     # - 用途: 下载图片、OCR处理、表情包偷取
 
+    onebot_message_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # 平台消息 ID（OneBot v11 message_id）
+    # - 作用: 记录消息在 QQ/OneBot 平台侧的 message_id（用于 reply 引用等）
+    # - 类型: 可空整数(nullable=True)
+    # - 用户入站消息: 从 Event.message_id 写入
+    # - 机器人出站消息: 从 send 返回的 message_id 写入
+    # - 注意: 与本表自增主键 id 不同（不同 id 空间）
+
     # ==================== 关系字段 ====================
     reply_to_msg_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # 引用回复的消息ID - 当前消息回复的是哪条消息

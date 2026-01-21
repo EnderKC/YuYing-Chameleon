@@ -249,6 +249,7 @@ class DebounceState:
     raw_ref: Optional[str] = None  # 原始引用
     msg_type: str = "text"  # 消息类型（text/image/mixed）
     timestamp: int = 0  # 时间戳（取所有段的最大值）
+    first_part_is_image: bool = False  # 首段是否为纯图片（用于等待加成策略）
 
     parts: int = 0  # 已拼接的段数
     first_update: float = field(default_factory=time.time)  # 第一次更新时间
@@ -283,6 +284,8 @@ class AdaptiveDebouncer:
         max_hold_seconds: float = 15.0,
         max_parts: int = 12,
         max_plain_len: int = 300,
+        first_image_extra_wait_seconds: float = 10.0,
+        image_extra_wait_seconds: float = 5.0,
         w1: float = 0.6,
         w2: float = -0.025,
         w3: float = -2.5,
@@ -298,6 +301,8 @@ class AdaptiveDebouncer:
             max_hold_seconds: 硬截止（秒），避免用户持续分段导致永不 flush
             max_parts: 最多拼接段数，超过强制 flush
             max_plain_len: 最大纯文本长度（去标记去空白后），超过强制 flush
+            first_image_extra_wait_seconds: 首段为纯图片时的额外初始等待（秒）
+            image_extra_wait_seconds: 首段不是纯图片时，每张图片的额外等待（秒）
             w1: 一次项系数（正数）
             w2: 二次项系数（负数）
             w3: 标点符号系数（负数）
@@ -316,6 +321,10 @@ class AdaptiveDebouncer:
         self._max_hold_seconds = float(max_hold_seconds)
         self._max_parts = int(max_parts)
         self._max_plain_len = int(max_plain_len)
+
+        # 图片等待加成
+        self._first_image_extra_wait_seconds = float(first_image_extra_wait_seconds)
+        self._image_extra_wait_seconds = float(image_extra_wait_seconds)
 
         # 公式参数
         self._w1 = float(w1)
@@ -377,6 +386,7 @@ class AdaptiveDebouncer:
             scene_type=part.scene_type,
             scene_id=part.scene_id,
             timestamp=int(st.timestamp or part.timestamp),
+            onebot_message_id=getattr(part, "onebot_message_id", None),
             msg_type=st.msg_type,
             content=merged_content,
             raw_ref=st.raw_ref,
@@ -426,6 +436,10 @@ class AdaptiveDebouncer:
             st.parts += 1
             st.last_update = now
 
+            # 记录首段类型（用于图片等待加成策略）
+            if st.parts == 1:
+                st.first_part_is_image = part.msg_type == "image"
+
             # 取消旧计时器
             if st.timer_task:
                 st.timer_task.cancel()
@@ -469,7 +483,7 @@ class AdaptiveDebouncer:
 
             if to_flush is None:
                 # 计算动态等待时间
-                wait = calculate_wait_time(
+                base_wait = calculate_wait_time(
                     st.content,
                     w1=self._w1,
                     w2=self._w2,
@@ -478,10 +492,32 @@ class AdaptiveDebouncer:
                     min_wait=self._min_wait,
                     max_wait=self._max_wait,
                 )
+
+                # 图片等待加成：
+                # - 若首段为纯图片：增加固定初始等待
+                # - 否则：按累计图片数增加等待（每张图片固定加成）
+                image_count = len(st.image_ref_map or {})
+                extra_wait = (
+                    self._first_image_extra_wait_seconds
+                    if st.first_part_is_image
+                    else (self._image_extra_wait_seconds * float(image_count))
+                    if image_count > 0
+                    else 0.0
+                )
+
+                wait = float(base_wait + extra_wait)
+
+                # 避免 wait 超过硬截止（否则 timer 可能睡过头）
+                remaining_hold = (st.first_update + self._max_hold_seconds) - now
+                if remaining_hold < 0.0:
+                    remaining_hold = 0.0
+                if wait > remaining_hold:
+                    wait = float(remaining_hold)
+
                 gen = st.generation
 
                 logger.debug(
-                    f"[AdaptiveDebouncer] 计算等待时间: key={key}, parts={st.parts}, len={_plain_len(st.content)}, wait={wait:.2f}s"
+                    f"[AdaptiveDebouncer] 计算等待时间: key={key}, parts={st.parts}, len={_plain_len(st.content)}, images={image_count}, first_image={st.first_part_is_image}, base={base_wait:.2f}s, extra={extra_wait:.2f}s, wait={wait:.2f}s"
                 )
 
                 # 创建新计时器

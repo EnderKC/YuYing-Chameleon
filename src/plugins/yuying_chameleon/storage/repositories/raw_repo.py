@@ -159,3 +159,25 @@ class RawRepository:
             )
             result = await session.execute(stmt)
             return int(result.scalar_one() or 0)
+
+    @staticmethod
+    async def count_scene_messages_after_id(
+        scene_type: str,
+        scene_id: str,
+        after_id: int,
+    ) -> int:
+        """统计某个场景在某条 raw_messages.id 之后的消息数量（不含该条）。"""
+
+        after_id = int(after_id or 0)
+        async with get_session() as session:
+            stmt = (
+                select(func.count())
+                .select_from(RawMessage)
+                .where(
+                    RawMessage.scene_type == scene_type,
+                    RawMessage.scene_id == scene_id,
+                    RawMessage.id > after_id,
+                )
+            )
+            result = await session.execute(stmt)
+            return int(result.scalar_one() or 0)

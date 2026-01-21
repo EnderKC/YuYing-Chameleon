@@ -123,7 +123,7 @@ class MemoryRepository:
         async with get_session() as session:
             values = [{"memory_id": int(memory_id), "msg_id": int(msg_id)} for msg_id in cleaned]
             # SQLite 复合主键冲突时忽略，避免抛异常中断主流程
-            stmt = insert(MemoryEvidence.__table__).values(values).prefix_with("OR IGNORE")
+            stmt = insert(MemoryEvidence).values(values).prefix_with("OR IGNORE")
             await session.execute(stmt)
             await session.commit()
 

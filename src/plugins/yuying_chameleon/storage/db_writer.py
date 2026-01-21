@@ -24,7 +24,12 @@ class DBWriteJob(Protocol):
 class DBWriter:
     """全局单例写入队列（优先级越小越优先）。"""
 
-    _instance = None
+    _instance: Optional["DBWriter"] = None
+    q: asyncio.PriorityQueue[
+        tuple[int, int, DBWriteJob, Optional[asyncio.Future[object]]]
+    ]
+    _seq: count[int]
+    _running: bool
 
     def __new__(cls) -> DBWriter:
         """创建/获取单例实例。"""
@@ -54,7 +59,7 @@ class DBWriter:
         """提交一个写入任务并等待其执行完成，返回 execute() 的结果。"""
 
         loop = asyncio.get_running_loop()
-        fut: asyncio.Future = loop.create_future()
+        fut: asyncio.Future[object] = loop.create_future()
         await self.q.put((priority, next(self._seq), job, fut))
         return await fut
 

@@ -51,12 +51,14 @@ text = await VisionHelper.ocr_image(file_path="/path/to/meme.png")
 from __future__ import annotations
 
 import base64  # Python标准库,用于base64编码
+import io
 import json
 import re
 from pathlib import Path  # 文件路径处理
 from typing import Optional, Tuple  # 类型提示
 
 from nonebot import logger  # NoneBot日志记录器
+from PIL import Image
 
 from .client import get_task_llm  # 支持模型组回落
 
@@ -137,7 +139,18 @@ class VisionHelper:
         if ext in {"jpg", "jpeg"}:  # JPEG格式
             mime = "image/jpeg"
         elif ext in {"gif"}:  # GIF格式
-            mime = "image/gif"
+            # 多数多模态模型/网关不支持 image/gif；将动图取首帧转为 PNG
+            try:
+                with Image.open(io.BytesIO(image_bytes)) as img:
+                    img.seek(0)
+                    frame = img.convert("RGBA")
+                    buf = io.BytesIO()
+                    frame.save(buf, format="PNG")
+                    image_bytes = buf.getvalue()
+                mime = "image/png"
+            except Exception:
+                # 转换失败时仍回退为 PNG mime，避免宣称 image/gif
+                mime = "image/png"
         # 其他格式(如png、webp等)使用默认的image/png
 
         # ==================== 步骤2: Base64编码 ====================

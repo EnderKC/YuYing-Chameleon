@@ -335,9 +335,10 @@ class _MCPServerRuntime:
         await self._connect()
         if self._session is None:
             raise MCPServerError(f"MCP server({self.cfg.id}) session is None")
+        session = self._session
 
         async def _do_call() -> Any:
-            return await self._session.call_tool(name=name, arguments=arguments)
+            return await session.call_tool(name=name, arguments=arguments)
 
         try:
             res = await asyncio.wait_for(_do_call(), timeout=timeout)

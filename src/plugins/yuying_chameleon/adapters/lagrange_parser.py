@@ -19,6 +19,7 @@ class InboundMessage:
     scene_type: str
     scene_id: str
     timestamp: int
+    onebot_message_id: Optional[int]
     msg_type: str
     content: str  # 原始内容或拼接后的段表示
     raw_ref: Optional[str] = None
@@ -50,6 +51,12 @@ class LagrangeParser:
         else:
             scene_type = "private"
             scene_id = str(event.user_id)
+
+        onebot_message_id: Optional[int] = None
+        try:
+            onebot_message_id = int(getattr(event, "message_id", None) or 0) or None
+        except Exception:
+            onebot_message_id = None
 
         # 基础段解析：将图片/表情等段转换为短标记
         msg_type = "text"
@@ -84,6 +91,7 @@ class LagrangeParser:
             scene_type=scene_type,
             scene_id=scene_id,
             timestamp=timestamp,
+            onebot_message_id=onebot_message_id,
             msg_type=msg_type,
             content=content,
             raw_ref=raw_ref,

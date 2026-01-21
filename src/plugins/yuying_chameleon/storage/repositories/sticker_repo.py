@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from sqlalchemy import or_, select, update
 
@@ -105,7 +105,7 @@ class StickerRepository:
 
         async with get_session() as session:
             # 构建更新字段字典，只更新非 None 的字段
-            values = {"updated_at": int(time.time())}
+            values: dict[str, Any] = {"updated_at": int(time.time())}
 
             if tags is not None:
                 values["tags"] = tags

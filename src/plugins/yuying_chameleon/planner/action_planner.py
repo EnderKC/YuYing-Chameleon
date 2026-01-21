@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -28,6 +29,17 @@ class ActionPlanner:
     """动作规划器。"""
 
     _cached_system_prompt: Optional[str] = None
+
+    @staticmethod
+    def _is_gif_url(url: str) -> bool:
+        u = (url or "").strip().lower()
+        if not u:
+            return False
+        try:
+            path = urllib.parse.urlparse(u).path.lower()
+        except Exception:
+            path = u
+        return path.endswith(".gif")
 
     @staticmethod
     def _safe_exc_str(exc: Exception, max_len: int = 200) -> str:
@@ -340,17 +352,28 @@ class ActionPlanner:
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
         # 多模态输入：将文本 prompt 与图片 url 合并到同一个 user message 的 content 数组里
-        if images:
+        max_images = int(getattr(plugin_config, "yuying_llm_history_max_images", 2) or 2)
+        if images and max_images > 0:
             content_parts: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
-            for item in list(images)[:2]:
+            added_images = 0
+            for item in list(images):
+                if added_images >= max_images:
+                    break
                 url = (item.get("url") or "").strip()
                 if not url:
                     continue
+                if ActionPlanner._is_gif_url(url):
+                    continue
                 content_parts.append({"type": "image_url", "image_url": {"url": url}})
+                added_images += 1
+                caption = (item.get("caption") or "").strip()
+                if caption:
+                    content_parts.append({"type": "text", "text": f"image_caption: {caption}"})
             messages.append({"role": "user", "content": content_parts})
         else:
             messages.append({"role": "user", "content": prompt})
 
+        # logger.debug(f"输入给大模型的信息: {messages}")
         # ==================== 工具调用支持（MCP + 内部工具） ====================
         # 策略：
         # 1. 内部工具总是可用（如 AI 主动写入记忆）

@@ -328,6 +328,8 @@ class StickerStealer:
                     ),
                     priority=5,  # 优先级5(中等)
                 )
+                if not isinstance(candidate, StickerCandidate):
+                    return
 
                 # ==================== 步骤7.2: 追加source_qq_id(发送者列表) ====================
 

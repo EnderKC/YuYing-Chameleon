@@ -137,7 +137,7 @@ def test_old_formats():
             "api_key": "sk-xxx",
             "models": ["deepseek-chat", "deepseek-coder"]
         })
-        print(f"  ✓ 统一供应商解析成功: {len(config.models)} 个模型")
+        print(f"  ✓ 统一供应商解析成功: {len(config.models or [])} 个模型")
     except Exception as e:
         print(f"  ✗ 失败: {e}")
         return False
@@ -153,7 +153,7 @@ def test_old_formats():
                 {"model": "gpt-3.5-turbo", "base_url": "https://api.openai.com/v1", "api_key": "sk-yyy"}
             ]
         })
-        print(f"  ✓ 混合供应商解析成功: {len(config.models)} 个模型")
+        print(f"  ✓ 混合供应商解析成功: {len(config.models or [])} 个模型")
     except Exception as e:
         print(f"  ✗ 失败: {e}")
         return False

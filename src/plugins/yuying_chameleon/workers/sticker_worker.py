@@ -156,9 +156,14 @@ class StickerWorker:
                 return
 
             # ==================== 解析 LLM 输出 ====================
-            ocr_text = data.get("ocr_text") if isinstance(data.get("ocr_text"), str) else None
-            tags = data.get("tags") if isinstance(data.get("tags"), list) else []
-            intents = data.get("intents") if isinstance(data.get("intents"), list) else []
+            raw_ocr_text = data.get("ocr_text")
+            ocr_text = raw_ocr_text if isinstance(raw_ocr_text, str) else None
+
+            raw_tags = data.get("tags")
+            tags = raw_tags if isinstance(raw_tags, list) else []
+
+            raw_intents = data.get("intents")
+            intents = raw_intents if isinstance(raw_intents, list) else []
             style = data.get("style") if isinstance(data.get("style"), str) else None
             is_banned = bool(data.get("is_banned", False))
             ban_reason = data.get("ban_reason") if isinstance(data.get("ban_reason"), str) else None

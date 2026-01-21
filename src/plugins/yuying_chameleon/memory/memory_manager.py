@@ -873,10 +873,13 @@ class MemoryManager:
             # await db_writer.submit_and_wait(): 提交写入任务并等待
             # MemoryRepository.add(memory): 插入记忆到数据库
             # - 返回: 插入后的Memory对象(带id)
-            memory = await db_writer.submit_and_wait(
+            created = await db_writer.submit_and_wait(
                 AsyncCallableJob(MemoryRepository.add, args=(memory,)),
                 priority=5,
             )
+            if not isinstance(created, Memory):
+                continue
+            memory = created
 
             # existing.append(memory): 添加到现有记忆列表
             # - 用途: 后续记忆的去重和冲突检测需要对比这条新记忆

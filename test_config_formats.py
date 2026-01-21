@@ -71,8 +71,9 @@ def test_format_3_mixed_providers():
     try:
         config = LLMModelGroupConfig.parse_obj(config_data)
         print(f"✓ 解析成功")
-        print(f"  models 数量: {len(config.models)}")
-        for i, model in enumerate(config.models):
+        models = config.models or []
+        print(f"  models 数量: {len(models)}")
+        for i, model in enumerate(models):
             if isinstance(model, str):
                 print(f"  models[{i}]: {model} (字符串)")
             else:
@@ -109,16 +110,17 @@ def test_format_4_providers_array():
         config = LLMModelGroupConfig.parse_obj(config_data)
         print(f"✓ 解析成功")
         print(f"  providers 已展开为 models")
-        print(f"  models 数量: {len(config.models)}")
+        models = config.models or []
+        print(f"  models 数量: {len(models)}")
 
         # 验证展开后的 models
-        for i, model in enumerate(config.models):
+        for i, model in enumerate(models):
             if isinstance(model, str):
                 print(f"  models[{i}]: {model} (字符串)")
             else:
                 print(f"  models[{i}]: {model.model}")
                 print(f"    - base_url: {model.base_url}")
-                print(f"    - api_key: {model.api_key[:10]}...")
+                print(f"    - api_key: {(model.api_key or '')[:10]}...")
                 print(f"    - timeout: {model.timeout}")
 
         return True

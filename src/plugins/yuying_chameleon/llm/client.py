@@ -46,7 +46,7 @@ import os  # 操作系统接口,用于读取环境变量
 import random  # 用于退避策略的随机抖动
 import time  # 用于记录延迟
 from dataclasses import dataclass
-from typing import Any, Dict, List, Literal, Optional, Union, overload  # 类型提示
+from typing import Any, Dict, List, Literal, Optional, Union, cast, overload  # 类型提示
 
 import openai  # OpenAI官方Python SDK
 from nonebot import logger  # NoneBot日志记录器
@@ -187,7 +187,7 @@ class LLMClient:
         # ==================== 步骤3: 构建AsyncOpenAI客户端的参数 ====================
 
         # kwargs: 用于传递给AsyncOpenAI的关键字参数字典
-        kwargs = {"timeout": timeout}  # 超时参数必须提供
+        kwargs: Dict[str, Any] = {"timeout": timeout}  # 超时参数必须提供
 
         if base_url:  # 如果有base_url,加入参数
             kwargs["base_url"] = base_url
@@ -639,15 +639,17 @@ class LLMClientPool:
                     is_empty = False
                     if return_result:
                         # ChatCompletionResult
-                        if result is not None:
-                            content = result.content
-                            tool_calls = result.tool_calls
+                        rr = cast(Optional[ChatCompletionResult], result)
+                        if rr is not None:
+                            content = rr.content
+                            tool_calls = rr.tool_calls
                             is_empty = (not content or not content.strip()) and not tool_calls
                         else:
                             is_empty = True
                     else:
                         # str
-                        is_empty = result is None or (isinstance(result, str) and not result.strip())
+                        rs = cast(Optional[str], result)
+                        is_empty = rs is None or not rs.strip()
 
                     if is_empty and treat_empty_as_failure:
                         logger.warning(

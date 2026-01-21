@@ -21,6 +21,8 @@ def test_config_loading():
         # 直接加载 config.py 模块
         config_path = project_root / "src" / "plugins" / "yuying_chameleon" / "config.py"
         spec = importlib.util.spec_from_file_location("config_test", config_path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"无法加载配置模块 spec: {config_path}")
         config_module = importlib.util.module_from_spec(spec)
 
         # Mock nonebot logger

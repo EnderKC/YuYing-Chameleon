@@ -204,6 +204,10 @@ class NormalizedMessage:
     # 归一化后的消息内容(短标记化,最多300字符)
     content: str
 
+    # OneBot 平台消息 ID（可选）
+    # - 用途: 用于 reply 引用等需要平台 message_id 的场景
+    onebot_message_id: Optional[int] = None
+
     # 原始引用(可选,用于调试)
     raw_ref: Optional[str] = None
 
@@ -384,6 +388,7 @@ class Normalizer:
             scene_type=inbound.scene_type,  # 场景类型(group/private)
             scene_id=inbound.scene_id,  # 场景标识(群号/QQ号)
             timestamp=inbound.timestamp,  # 消息时间戳
+            onebot_message_id=getattr(inbound, "onebot_message_id", None),
             msg_type=inbound.msg_type,  # 消息类型(text/image/mixed)
 
             # 归一化后的内容

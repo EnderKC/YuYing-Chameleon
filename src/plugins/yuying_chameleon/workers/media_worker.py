@@ -12,6 +12,7 @@ from nonebot import logger
 
 from ..llm.vision import VisionHelper
 from ..config import plugin_config
+from ..media_mime import is_remote_gif, looks_like_gif_path, looks_like_gif_ref
 from ..storage.models import IndexJob
 from ..storage.repositories.index_jobs_repo import IndexJobRepository
 from ..storage.repositories.media_cache_repo import MediaCacheRepository
@@ -63,19 +64,27 @@ class MediaWorker:
 
             local_path = self._maybe_local_file(file_path)
 
-            if bool(getattr(plugin_config, "yuying_media_enable_ocr", False)):
-                # 单次调用同时生成 caption + OCR（更省 token）
-                caption, ocr_text = await VisionHelper.caption_and_ocr_image(local_path, url=url)
-                if not caption and url and not local_path:
-                    local_path = await self._download_to_tmp(media_key, url=url)
-                    caption, ocr_text = await VisionHelper.caption_and_ocr_image(local_path, url=None)
+            # GIF：跳过视觉模型调用，直接写一个稳定 caption，避免模型/网关不支持 image/gif
+            if (
+                (url and looks_like_gif_ref(str(url)))
+                or (url and await is_remote_gif(str(url)))
+                or (local_path and looks_like_gif_path(str(local_path)))
+            ):
+                caption, ocr_text = "动图", ""
             else:
-                # 仅 caption：先尝试用 url（通常更小、更兼容）；失败再回退本地文件
-                caption = await VisionHelper.caption_image(local_path, url=url)
-                if not caption and url and not local_path:
-                    local_path = await self._download_to_tmp(media_key, url=url)
-                    caption = await VisionHelper.caption_image(local_path, url=None)
-                ocr_text = ""
+                if bool(getattr(plugin_config, "yuying_media_enable_ocr", False)):
+                    # 单次调用同时生成 caption + OCR（更省 token）
+                    caption, ocr_text = await VisionHelper.caption_and_ocr_image(local_path, url=url)
+                    if not caption and url and not local_path:
+                        local_path = await self._download_to_tmp(media_key, url=url)
+                        caption, ocr_text = await VisionHelper.caption_and_ocr_image(local_path, url=None)
+                else:
+                    # 仅 caption：先尝试用 url（通常更小、更兼容）；失败再回退本地文件
+                    caption = await VisionHelper.caption_image(local_path, url=url)
+                    if not caption and url and not local_path:
+                        local_path = await self._download_to_tmp(media_key, url=url)
+                        caption = await VisionHelper.caption_image(local_path, url=None)
+                    ocr_text = ""
 
             if not caption:
                 caption = "图片"

@@ -100,6 +100,9 @@
 openai_api_key = "your-api-key"
 openai_model = "gpt-4-turbo"
 
+# 多模态：传给 LLM 的历史图片上限（从当前消息开始向前数，含当前；自动跳过 gif）
+llm_history_max_images = 2
+
 # 向量化模型
 embedder_model = "text-embedding-3-small"
 
@@ -113,7 +116,7 @@ nano_llm_model = "THUDM/GLM-4.1V-9B-Thinking"
 nano_llm_api_key = "your-nano-api-key"
 ```
 
-详细配置说明请参考 [运行逻辑说明文档.md](./运行逻辑说明文档.md)
+详细配置说明请参考 [运行逻辑说明文档.md](./docs/运行逻辑说明文档.md)
 
 ## 📸 5. 展示
 
@@ -126,7 +129,7 @@ nano_llm_api_key = "your-nano-api-key"
 
 ## 📚 6. 文档
 
-- [运行逻辑说明文档](./运行逻辑说明文档.md) - 详细的架构说明和运行原理
+- [运行逻辑说明文档](./docs/运行逻辑说明文档.md) - 详细的架构说明和运行原理
 
 ## 🤝 7. 贡献
 
@@ -151,6 +154,14 @@ $$WaitTime = w_1 \cdot Length + w_2 \cdot Length^2 + w_3 \cdot IsEndPunctuation 
 > 30个字 (无标点): $0.5(30) - 0.02(900) + 1.5 = 15 - 18 + 1.5 = -1.5s$ (立即发送)
 > 
 > 任何字数 (有标点 P=1): 减去 2.0s，大幅加速。
+
+### 8.2 图片等待加成（自适应防抖）
+
+在上述基础等待时间上，追加图片相关的额外等待（与拼接段数上限无关）：
+
+- 若**防抖窗口首段为纯图片**（`msg_type == "image"`）：额外 `+ adaptive_debounce_first_image_extra_wait_seconds`（默认 10s）
+- 若首段不是纯图片：按当前窗口累计的图片数 `N`（`image_ref_map` 的 unique 数量）额外 `+ N * adaptive_debounce_image_extra_wait_seconds`（默认每张 5s）
+- 最终等待会被 `adaptive_debounce_max_hold_seconds` 的剩余时间限制，避免超过硬截止
 
 ## 9 参考文献
 ### 9.1 用户消息防抖

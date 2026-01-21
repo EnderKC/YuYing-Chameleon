@@ -121,10 +121,10 @@ def _normalize_schema(
 
     # 组合关键字：尽力展平
     for comb in ("oneOf", "anyOf"):
-        variants = schema.get(comb)
-        if isinstance(variants, list) and variants:
+        raw_variants = schema.get(comb)
+        if isinstance(raw_variants, list) and raw_variants:
             norm_variants: List[Dict[str, Any]] = []
-            for v in variants:
+            for v in raw_variants:
                 dv = _as_dict(v)
                 if not dv:
                     continue

@@ -626,6 +626,18 @@ class Config(BaseModel):
     # - 单位: 行(消息行)
     # - 默认值: 30
 
+    yuying_llm_history_max_images: int = Field(
+        default=3,
+        alias="llm_history_max_images",
+    )
+    # 传给 LLM 的“历史图片”上限（多模态输入）
+    # - 作用: 在 ActionPlanner 调用时，将当前消息及其之前的图片作为 image_url 附加到 prompt
+    # - 口径: 从“当前消息”开始向前数，最多附加多少张图片（包含当前消息中的图片）
+    # - 过滤: 自动跳过 GIF（不作为多模态 image_url 传给 LLM）
+    # - 单位: 张
+    # - 默认值: 2（保持旧行为：最多传 2 张图片）
+    # - 设为 0: 完全不向 LLM 传图片（仅保留 [image:...] 文本标记）
+
     yuying_vector_size: int = Field(default=2048, alias="vector_size")
     # 向量维度大小
     # - 作用: 文本向量化后的维度数
@@ -993,6 +1005,14 @@ class Config(BaseModel):
     # - 默认值: 40
     # - 目的: 避免单条消息过长,保持简洁
 
+    yuying_reply_quote_gap_messages: int = Field(default=0, alias="reply_quote_gap_messages")
+    # 回复引用阈值：隔了太多条消息后，机器人回复会自动加 reply 引用
+    # - 作用: 当 bot 生成回复时，若从“触发回复的那条消息”到真正发送之间插入了太多消息，
+    #         则在第一条回复前加上 OneBot 的 reply 段，明确指向被回复的消息，减少串话。
+    # - 单位: 条（消息数）
+    # - 默认值: 0（关闭）
+    # - 示例: 5 或 10
+
     # ==================== 自适应防抖配置（Adaptive Debounce） ====================
 
     yuying_adaptive_debounce_enabled: bool = Field(default=False, alias="adaptive_debounce_enabled")
@@ -1084,6 +1104,26 @@ class Config(BaseModel):
     # - 单位: 秒
     # - 默认值: 5.0 (5秒)
     # - 目的: 防止等待时间过长影响用户体验
+
+    yuying_adaptive_debounce_first_image_extra_wait_seconds: float = Field(
+        default=10.0,
+        alias="adaptive_debounce_first_image_extra_wait_seconds",
+    )
+    # 图片等待加成：首段为纯图片时的额外初始等待
+    # - 触发条件: 防抖窗口的第一段消息 msg_type=="image"
+    # - 单位: 秒
+    # - 默认值: 10.0
+    # - 用途: 预留视觉/OCR 预处理时间，避免过早 flush
+
+    yuying_adaptive_debounce_image_extra_wait_seconds: float = Field(
+        default=5.0,
+        alias="adaptive_debounce_image_extra_wait_seconds",
+    )
+    # 图片等待加成：首段不是纯图片时，每张图片的额外等待
+    # - 触发条件: 防抖窗口第一段 msg_type!="image"，且当前累计包含图片
+    # - 计数口径: 累计 image_ref_map 的 unique 图片数量
+    # - 单位: 秒
+    # - 默认值: 5.0
 
     # ==================== 心流模式配置 ====================
 

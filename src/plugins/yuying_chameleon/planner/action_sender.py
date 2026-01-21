@@ -8,6 +8,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from nonebot.adapters.onebot.v11 import Bot
+from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from nonebot import logger
 
 from ..config import plugin_config
@@ -26,6 +27,64 @@ from ..storage.write_jobs import AsyncCallableJob
 
 class ActionSender:
     """将动作列表发送到聊天窗口。"""
+
+    @staticmethod
+    def _extract_onebot_message_id(send_result: Any) -> Optional[int]:
+        """尽力从 matcher.send/bot.send 返回值中提取 OneBot message_id。"""
+
+        if send_result is None:
+            return None
+
+        if isinstance(send_result, int):
+            return int(send_result)
+
+        if isinstance(send_result, str):
+            s = send_result.strip()
+            if s.isdigit():
+                try:
+                    return int(s)
+                except Exception:
+                    return None
+            return None
+
+        if isinstance(send_result, dict):
+            mid = send_result.get("message_id") or send_result.get("messageId")
+            try:
+                return int(mid) if mid is not None else None
+            except Exception:
+                return None
+
+        mid = getattr(send_result, "message_id", None)
+        if mid is not None:
+            try:
+                return int(mid)
+            except Exception:
+                return None
+
+        return None
+
+    @staticmethod
+    def _prepend_reply(message: Any, reply_message_id: int) -> Any:
+        """将 reply 段前缀加到待发送消息上（尽力兼容）。"""
+
+        try:
+            # 优先使用 MessageSegment.reply（适配器原生）
+            if hasattr(MessageSegment, "reply"):
+                prefix = MessageSegment.reply(int(reply_message_id))
+                if isinstance(message, str):
+                    return Message(prefix + MessageSegment.text(message))
+                return prefix + message
+        except Exception:
+            pass
+
+        # 回退：CQ 码字符串（OneBot v11 通常支持）
+        cq = f"[CQ:reply,id={int(reply_message_id)}]"
+        if isinstance(message, str):
+            return cq + message
+        try:
+            return Message(cq) + message
+        except Exception:
+            return message
 
     @staticmethod
     def _extract_query_text_from_actions(
@@ -77,11 +136,31 @@ class ActionSender:
         scene_type: str,
         scene_id: str,
         actions: List[Dict[str, Any]],
+        anchor_raw_msg_id: int = 0,
+        anchor_onebot_message_id: Optional[int] = None,
     ) -> None:
         """按规则发送 actions（最多 4 条，300~900ms 随机间隔）。"""
 
         max_count = int(plugin_config.yuying_action_max_count)
         actions = actions[:max_count]
+
+        reply_quote_gap = int(getattr(plugin_config, "yuying_reply_quote_gap_messages", 0) or 0)
+        reply_prefix_id: Optional[int] = None
+        if (
+            reply_quote_gap > 0
+            and int(anchor_raw_msg_id or 0) > 0
+            and anchor_onebot_message_id
+        ):
+            try:
+                gap = await RawRepository.count_scene_messages_after_id(
+                    scene_type,
+                    scene_id,
+                    after_id=int(anchor_raw_msg_id),
+                )
+                if gap >= reply_quote_gap:
+                    reply_prefix_id = int(anchor_onebot_message_id)
+            except Exception as exc:
+                logger.debug(f"计算 reply 引用间隔失败，将继续：{exc}")
 
         for idx, action in enumerate(actions):
             if idx > 0:
@@ -92,13 +171,19 @@ class ActionSender:
                 content = str(action.get("content") or "").strip()
                 if not content:
                     continue
-                await matcher.send(content)
+                to_send = content
+                if reply_prefix_id and idx == 0:
+                    to_send = ActionSender._prepend_reply(to_send, reply_prefix_id)
+                sent = await matcher.send(to_send)
+                sent_mid = ActionSender._extract_onebot_message_id(sent)
                 await ActionSender._record_bot_message(
                     bot_id=str(bot.self_id),
                     scene_type=scene_type,
                     scene_id=scene_id,
                     msg_type="text",
                     content=content,
+                    onebot_message_id=sent_mid,
+                    reply_to_onebot_message_id=reply_prefix_id if idx == 0 else None,
                 )
                 await Gatekeeper.mark_sent(scene_type, scene_id)
 
@@ -142,7 +227,11 @@ class ActionSender:
                     continue
 
                 # 发送表情包消息
-                await matcher.send(StickerSender.create_message(sticker))
+                to_send = StickerSender.create_message(sticker)
+                if reply_prefix_id and idx == 0:
+                    to_send = ActionSender._prepend_reply(to_send, reply_prefix_id)
+                sent = await matcher.send(to_send)
+                sent_mid = ActionSender._extract_onebot_message_id(sent)
 
                 # 记录使用情况（用于 cooldown）
                 await db_writer.submit(
@@ -161,6 +250,8 @@ class ActionSender:
                     scene_id=scene_id,
                     msg_type="sticker",
                     content=f"[sticker:{sticker.sticker_id}]",
+                    onebot_message_id=sent_mid,
+                    reply_to_onebot_message_id=reply_prefix_id if idx == 0 else None,
                 )
                 await Gatekeeper.mark_sent(scene_type, scene_id)
             else:
@@ -184,6 +275,8 @@ class ActionSender:
         scene_id: str,
         msg_type: str,
         content: str,
+        onebot_message_id: Optional[int] = None,
+        reply_to_onebot_message_id: Optional[int] = None,
     ) -> None:
         """将机器人输出写入 raw_messages。
 
@@ -198,10 +291,11 @@ class ActionSender:
                 scene_type=scene_type,
                 scene_id=scene_id,
                 timestamp=int(time.time()),
+                onebot_message_id=onebot_message_id,
                 msg_type=msg_type,
                 content=content,
                 raw_ref=None,
-                reply_to_msg_id=None,
+                reply_to_msg_id=reply_to_onebot_message_id,
                 mentioned_bot=False,
                 is_effective=False,
                 is_bot=True,

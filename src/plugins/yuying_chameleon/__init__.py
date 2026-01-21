@@ -13,7 +13,7 @@ import re
 import urllib.request
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, cast
 
 from nonebot import get_driver, on_message
 from nonebot.adapters.onebot.v11 import Bot, Event
@@ -34,6 +34,7 @@ from .storage.repositories.index_jobs_repo import IndexJobRepository
 from .storage.repositories.media_cache_repo import MediaCacheRepository
 from .storage.repositories.profile_repo import ProfileRepository
 from .storage.repositories.raw_repo import RawRepository
+from .storage.migrations_runner import run_migrations
 from .storage.sqlalchemy_engine import engine
 from .stickers.selector import StickerSelector
 from .stickers.stealer import StickerStealer
@@ -50,12 +51,13 @@ from .paths import assets_dir
 from .storage.write_jobs import AddIndexJobJob
 from .storage.write_jobs import AsyncCallableJob
 from .tools.adaptive_debouncer import AdaptiveDebouncer
+from .media_mime import is_remote_gif, looks_like_gif_path, looks_like_gif_ref
 
 __plugin_meta__ = PluginMetadata(
     name="YuYing-Chameleon",
     description="Context-aware QQ Bot with Memory & Stickers",
     usage="Auto-active",
-    config=Config,
+    config=cast(Any, Config),
 )
 
 driver = get_driver()
@@ -139,12 +141,20 @@ async def _collect_image_inputs(
     items: list[dict[str, str]] = []
     for raw_ref, media_key in list((image_ref_map or {}).items())[:2]:
         try:
+            if looks_like_gif_ref(str(raw_ref)):
+                continue
             url: Optional[str] = None
             if isinstance(raw_ref, str) and (raw_ref.startswith("http://") or raw_ref.startswith("https://")):
                 url = raw_ref
             else:
                 info = await bot.get_image(file=raw_ref)
-                url = info.get("url") if isinstance(info, dict) else None
+                if isinstance(info, dict):
+                    name = str(info.get("filename") or info.get("file") or "")
+                    if looks_like_gif_ref(name):
+                        continue
+                    url = info.get("url")
+                else:
+                    url = None
 
             caption = ""
             try:
@@ -155,6 +165,8 @@ async def _collect_image_inputs(
                 caption = ""
 
             if url:
+                if await is_remote_gif(str(url)):
+                    continue
                 items.append(
                     {
                         "url": str(url),
@@ -164,6 +176,146 @@ async def _collect_image_inputs(
                 )
         except Exception:
             continue
+
+    return items
+
+
+_IMAGE_MEDIA_KEY_RE = re.compile(r"\[image:(?P<media_key>[0-9a-f]{12})(?::[^\]]*)?\]")
+
+
+def _extract_first_media_key(text: str) -> Optional[str]:
+    """从归一化 content 中提取第一个图片 media_key（12位 hex）。"""
+
+    m = _IMAGE_MEDIA_KEY_RE.search(text or "")
+    if not m:
+        return None
+    return str(m.group("media_key"))
+
+
+async def _collect_llm_history_image_inputs(
+    *,
+    bot: Bot,
+    scene_type: str,
+    scene_id: str,
+    current_raw_msg_id: int,
+    current_image_ref_map: dict[str, str],
+    max_images: int,
+) -> list[dict[str, str]]:
+    """收集“从当前开始向前数”的图片输入，用于传给 LLM（多模态）。
+
+    规则：
+    - 优先收集当前消息的图片；
+    - 若不足 max_images，再从历史 raw_messages 中按时间倒序补齐；
+    - 以 media_key 去重；
+    - 对非 http(s) raw_ref 尝试调用 OneBot `get_image(file=raw_ref)` 获取 url。
+    """
+
+    max_images = int(max_images)
+    if max_images <= 0:
+        return []
+
+    items: list[dict[str, str]] = []
+    seen_keys: set[str] = set()
+
+    gif_cache: dict[str, bool] = {}
+
+    async def _is_gif_url(url: str) -> bool:
+        u = (url or "").strip()
+        if not u:
+            return False
+        if looks_like_gif_ref(u):
+            return True
+        if u in gif_cache:
+            return gif_cache[u]
+        gif_cache[u] = await is_remote_gif(u)
+        return gif_cache[u]
+
+    async def _try_add(*, raw_ref: str, media_key: str) -> None:
+        if not raw_ref or raw_ref in {"unknown", "None"}:
+            return
+        if not media_key or media_key in {"unknown", "None"}:
+            return
+        if media_key in seen_keys:
+            return
+        if len(items) >= max_images:
+            return
+        # GIF 跳过：避免动图造成理解/兼容性问题（部分模型不支持 image/gif）
+        if looks_like_gif_ref(raw_ref):
+            return
+
+        url: Optional[str] = None
+        if isinstance(raw_ref, str) and (raw_ref.startswith("http://") or raw_ref.startswith("https://")):
+            url = raw_ref
+        else:
+            try:
+                info = await bot.get_image(file=raw_ref)
+                if isinstance(info, dict):
+                    name = str(info.get("filename") or info.get("file") or "")
+                    if looks_like_gif_ref(name):
+                        return
+                    url = info.get("url")
+                else:
+                    url = None
+            except Exception:
+                url = None
+
+        if not url:
+            return
+        if await _is_gif_url(str(url)):
+            return
+
+        caption = ""
+        try:
+            cached = await MediaCacheRepository.get(media_key)
+            if cached and cached.caption:
+                caption = str(cached.caption).strip()
+        except Exception:
+            caption = ""
+
+        items.append(
+            {
+                "url": str(url),
+                "media_key": str(media_key),
+                "caption": caption,
+            }
+        )
+        seen_keys.add(media_key)
+
+    # 1) 当前消息中的图片（保持输入顺序）
+    for raw_ref, media_key in (current_image_ref_map or {}).items():
+        if len(items) >= max_images:
+            break
+        await _try_add(raw_ref=str(raw_ref), media_key=str(media_key))
+
+    if len(items) >= max_images:
+        return items
+
+    # 2) 历史图片（从当前消息之前开始，时间倒序）
+    try:
+        recent = await RawRepository.get_recent_by_scene(
+            scene_type,
+            scene_id,
+            limit=max(50, max_images * 20),
+        )
+        for m in recent:
+            if len(items) >= max_images:
+                break
+            if int(getattr(m, "id", 0)) >= int(current_raw_msg_id):
+                continue
+            if str(getattr(m, "msg_type", "")) not in {"image", "mixed"}:
+                continue
+
+            raw_ref = str(getattr(m, "raw_ref", "") or "").strip()
+            if not raw_ref:
+                continue
+
+            media_key = _extract_first_media_key(str(getattr(m, "content", "") or ""))
+            if not media_key:
+                continue
+
+            await _try_add(raw_ref=raw_ref, media_key=media_key)
+    except Exception:
+        pass
 
     return items
 
@@ -258,7 +410,8 @@ async def _get_reply_message_info(
                     continue
 
                 seg_type = str(seg.get("type") or "").strip()
-                seg_data = seg.get("data") if isinstance(seg.get("data"), dict) else {}
+                data = seg.get("data")
+                seg_data = data if isinstance(data, dict) else {}
 
                 if seg_type == "text":
                     parts.append(str(seg_data.get("text") or ""))
@@ -413,6 +566,11 @@ async def _try_caption_and_ocr(
     """
 
     try:
+        # GIF 直接跳过：部分多模态模型不支持 image/gif（且动图理解意义有限）
+        if file_path and looks_like_gif_path(str(file_path)):
+            return "", ""
+        if url and await is_remote_gif(str(url)):
+            return "", ""
         enable_ocr = bool(getattr(plugin_config, "yuying_media_enable_ocr", False))
         if enable_ocr:
             caption, ocr_text = await asyncio.wait_for(
@@ -436,15 +594,19 @@ async def _try_caption_and_ocr(
 async def startup() -> None:
     """NoneBot 启动时执行：初始化依赖并启动后台任务。"""
 
-    # 1) 初始化数据库表（直接 create_all）
+    # 1) 初始化数据库表（优先 migrations，失败回退 create_all）
     try:
-        async with engine.begin() as conn:
-            from .storage.models import Base
-
-            await conn.run_sync(Base.metadata.create_all)
+        await run_migrations()
     except Exception as exc:
-        logger.error(f"初始化数据库失败：{exc}")
-        raise
+        logger.warning(f"执行 migrations 失败，将回退为 create_all：{exc}")
+        try:
+            async with engine.begin() as conn:
+                from .storage.models import Base
+
+                await conn.run_sync(Base.metadata.create_all)
+        except Exception as exc2:
+            logger.error(f"初始化数据库失败：{exc2}")
+            raise
 
     # 2) 初始化向量库（失败允许降级）
     await qdrant_manager.init_collections()
@@ -534,6 +696,22 @@ def get_adaptive_debouncer() -> AdaptiveDebouncer:
             max_wait=float(
                 getattr(plugin_config, "yuying_adaptive_debounce_max_wait", 5.0) or 5.0
             ),
+            first_image_extra_wait_seconds=float(
+                getattr(
+                    plugin_config,
+                    "yuying_adaptive_debounce_first_image_extra_wait_seconds",
+                    10.0,
+                )
+                or 10.0
+            ),
+            image_extra_wait_seconds=float(
+                getattr(
+                    plugin_config,
+                    "yuying_adaptive_debounce_image_extra_wait_seconds",
+                    5.0,
+                )
+                or 5.0
+            ),
         )
     return _adaptive_debouncer
 
@@ -560,6 +738,7 @@ async def _process_normalized(bot: Bot, normalized: NormalizedMessage) -> None:
         scene_type=normalized.scene_type,
         scene_id=normalized.scene_id,
         timestamp=normalized.timestamp,
+        onebot_message_id=getattr(normalized, "onebot_message_id", None),
         msg_type=normalized.msg_type,
         content=normalized.content,
         raw_ref=normalized.raw_ref,
@@ -828,13 +1007,27 @@ async def _process_normalized(bot: Bot, normalized: NormalizedMessage) -> None:
         pass
 
     # 9) 动作规划
+    llm_max_images = int(getattr(plugin_config, "yuying_llm_history_max_images", 2) or 2)
+    llm_image_inputs: Optional[list[dict[str, str]]] = None
+    if llm_max_images > 0:
+        llm_image_inputs = await _collect_llm_history_image_inputs(
+            bot=bot,
+            scene_type=normalized.scene_type,
+            scene_id=normalized.scene_id,
+            current_raw_msg_id=raw_msg.id,
+            current_image_ref_map=normalized.image_ref_map or {},
+            max_images=llm_max_images,
+        )
+        if not llm_image_inputs:
+            llm_image_inputs = None
+
     actions = await ActionPlanner.plan_actions(
         normalized.content,
         context.get("memories", []),
         context.get("rag_snippets", []),
         recent_dialogue=recent_dialogue,
         reply_to_message=reply_to_message,
-        images=image_inputs,
+        images=llm_image_inputs,
         meta=prompt_meta,
         context_qq_id=normalized.qq_id,
         context_scene_type=normalized.scene_type,
@@ -849,6 +1042,8 @@ async def _process_normalized(bot: Bot, normalized: NormalizedMessage) -> None:
         scene_type=normalized.scene_type,
         scene_id=normalized.scene_id,
         actions=actions,
+        anchor_raw_msg_id=int(getattr(raw_msg, "id", 0) or 0),
+        anchor_onebot_message_id=getattr(raw_msg, "onebot_message_id", None),
     )
 
 

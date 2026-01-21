@@ -329,7 +329,7 @@ async def create_memory(
             {
                 "ok": False,
                 "error": "write_failed",
-                "detail": f"写入记忆时发生异常：{type(exc).__name__}",
+                "detail": f"写入记忆时发生异常：{exc.__class__.__name__}",
             },
             ensure_ascii=False,
         )

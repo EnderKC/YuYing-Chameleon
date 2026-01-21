@@ -36,6 +36,7 @@ retrieval_snippet_max_chars = 120
 hybrid_query_recent_messages_limit = 30      # Hybrid Query 读取场景最近消息条数
 hybrid_query_recent_user_messages_limit = 3  # Hybrid Query 中用户最近消息条数
 recent_dialogue_max_lines = 30               # 注入到主 prompt 的最近对话行数
+llm_history_max_images = 2                   # 传给 LLM 的历史图片上限（从当前消息开始向前数，含当前；自动跳过 gif）
 
 # OpenAI / LLM 设置
 openai_base_url = "https://api.openai.com/v1"
@@ -113,6 +114,7 @@ action_max_count = 4
 action_min_delay_ms = 300
 action_max_delay_ms = 900
 reply_text_max_chars = 40
+reply_quote_gap_messages = 10 # 隔了多少条消息后，bot 回复自动加 reply 引用（0=关闭）
 
 # 心流模式设置
 # 说明：心流模式使用 nano 模型作为前置判断，决定是否回复每条消息

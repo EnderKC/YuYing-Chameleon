@@ -279,10 +279,13 @@ class SummaryManager:
         # SummaryRepository.add(record): 插入摘要记录
         # - 操作: INSERT INTO summaries VALUES (...)
         # - 返回: 插入后的Summary对象(带自动生成的id)
-        record = await db_writer.submit_and_wait(
+        created = await db_writer.submit_and_wait(
             AsyncCallableJob(SummaryRepository.add, args=(record,)),
             priority=5,  # 优先级5(中等)
         )
+        if not isinstance(created, Summary):
+            return None
+        record = created
 
         # ==================== 步骤11: 创建向量化任务(索引双写) ====================
 

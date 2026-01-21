@@ -433,7 +433,7 @@ class StickerRegistry:
             # - normalize_ocr_text(ocr_text): 归一化后的OCR文本(最多200字符)
             # 例如: "a1b2c3d4e5f6g7h8+hello world"
             # 用途: 识别"实质相同"的表情包(相似图+相同文字)
-            fingerprint = f"{phash}+{normalize_ocr_text(ocr_text)}"
+            fingerprint = f"{phash}+{normalize_ocr_text(ocr_text or '')}"
 
             # ==================== 步骤7: 创建Sticker对象 ====================
 
